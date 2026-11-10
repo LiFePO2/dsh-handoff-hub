@@ -9,7 +9,11 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { apply } from '../index.js'
+import { normalizeConfig } from '../lib/config.js'
+import { diffRoomDocs, scanRoomDocs, startAutoReminder, createAutoReminderController } from '../lib/watch.js'
+import { buildPanelState, createPanelHandler } from '../lib/panel.js'
 
 const workspace = await mkdtemp(join(tmpdir(), 'handoff-hub-'))
 const room = join(workspace, 'work', 'handoff')
@@ -46,6 +50,7 @@ function createFakeCtx(options = {}) {
   const created = []
   const deleted = []
   const effectDisposers = []
+  const logs = []
 
   const peer = { id: 'session-peer', status: 'idle', session: { id: 'session-peer', header: { cwd: workspace } } }
   const live = { id: 'session-live', status: 'running', session: { id: 'session-live', header: { cwd: workspace, agentPreset: 'cordis' } } }
@@ -53,9 +58,9 @@ function createFakeCtx(options = {}) {
   const elsewhere = { id: 'session-elsewhere', status: 'idle', session: { id: 'session-elsewhere', header: { cwd: join(workspace, 'other') } } }
 
   const ctx = {
-    logger: { info() {}, warn() {} },
+    logger: { info(message) { logs.push(String(message)) }, warn(message) { logs.push(String(message)) } },
     get(name) {
-      if (name === 'workingDirectory') return { get: (session) => session?.header?.cwd }
+      if (name === 'workingDirectory') return { get: (session) => session?.header?.cwd, defaultDirectory: workspace }
       if (name === 'agents') return { list: () => options.agents ?? [peer, live, child, elsewhere] }
       if (name === 'sessionPersistence') return this.sessionPersistence
       return undefined
@@ -109,7 +114,7 @@ function createFakeCtx(options = {}) {
       return disposer
     }
   }
-  return { ctx, registered, created, deleted, effectDisposers }
+  return { ctx, registered, created, deleted, effectDisposers, logs }
 }
 
 function execFor(sessionId, header = {}) {
@@ -150,6 +155,23 @@ test('renders tool output as one text block', () => {
   assert.deepEqual(rendered, [{ type: 'text', text: 'hello' }])
 })
 
+test('auto-remind config defaults off and clamps invalid values', () => {
+  const defaults = normalizeConfig({})
+  assert.equal(defaults.autoRemind.enabled, false)
+  assert.equal(defaults.autoRemind.debounceSeconds, 30)
+  assert.equal(defaults.autoRemind.pollSeconds, 10)
+  assert.equal(defaults.autoRemind.mergeSeconds, 60)
+  const tuned = normalizeConfig({ autoRemind: { enabled: true, debounceSeconds: 5, pollSeconds: 2, mergeSeconds: 2 } })
+  assert.equal(tuned.autoRemind.enabled, true)
+  assert.equal(tuned.autoRemind.debounceSeconds, 5)
+  assert.equal(tuned.autoRemind.pollSeconds, 2)
+  assert.equal(tuned.autoRemind.mergeSeconds, 2)
+  const clamped = normalizeConfig({ autoRemind: { enabled: true, debounceSeconds: 9999, pollSeconds: 9999, mergeSeconds: 9999 } })
+  assert.equal(clamped.autoRemind.debounceSeconds, 30)
+  assert.equal(clamped.autoRemind.pollSeconds, 10)
+  assert.equal(clamped.autoRemind.mergeSeconds, 60)
+})
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Board before any join
 // ---------------------------------------------------------------------------------------------------------------------
@@ -159,9 +181,24 @@ await testAsync('board on an empty room explains how to start', async () => {
   contains(report, room, 'board')
   contains(report, '未登记', 'board')
   contains(report, '还没有同伴登记', 'board')
+  contains(report, '自动提醒：关闭', 'auto-remind off by default')
   contains(report, 'session-liv', 'board lists live unregistered session')
   notContains(report, 'session-chil', 'board excludes delegated subagents')
   notContains(report, 'session-else', 'board excludes other workspaces')
+})
+
+await testAsync('scan and diff detect added, modified and removed documents', async () => {
+  const directory = join(workspace, 'watch-scan')
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, 'a.md'), 'a')
+  await writeFile(join(directory, 'b.md'), 'b')
+  const first = await scanRoomDocs(directory)
+  assert.deepEqual([...first.keys()], ['a.md', 'b.md'])
+  await writeFile(join(directory, 'a.md'), 'a changed')
+  await rm(join(directory, 'b.md'))
+  await writeFile(join(directory, 'c.md'), 'c')
+  const second = await scanRoomDocs(directory)
+  assert.deepEqual(diffRoomDocs(first, second), ['a.md', 'b.md', 'c.md'])
 })
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -556,6 +593,161 @@ await testAsync('concurrent joins serialize and only one session claims a new do
     execFor('session-race-c')
   )
   contains(third.report, '已登记为 race-c', 'lock is released after the race')
+})
+
+await testAsync('auto-remind targets only stale peers and skips the changed document author', async () => {  const auto = createFakeCtx()
+  apply(auto.ctx, { directory: 'work/watch-room', promptLanguage: 'zh', cleanupEndedTasks: false })
+  await call(
+    auto.registered,
+    'handoff_join',
+    { name: 'watch-a', doc: 'watch-a.md', content: '# A\n' },
+    execFor('session-watch-a')
+  )
+  await call(
+    auto.registered,
+    'handoff_join',
+    { name: 'watch-b', doc: 'watch-b.md', content: '# B\n' },
+    execFor('session-watch-b')
+  )
+  const stop = startAutoReminder(
+    auto.ctx,
+    normalizeConfig({
+      directory: 'work/watch-room',
+      promptLanguage: 'zh',
+      autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1, mergeSeconds: 0 }
+    })
+  )
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await writeFile(join(workspace, 'work', 'watch-room', 'watch-a.md'), '# A changed\n')
+  await new Promise((resolve) => setTimeout(resolve, 3200))
+  assert.deepEqual(
+    auto.created.map((entry) => entry.request.target.sessionId),
+    ['session-watch-b'],
+    `the author is skipped and only the stale peer is nudged; logs=${auto.logs.join(' | ')}`
+  )
+  await writeFile(join(workspace, 'work', 'watch-room', 'watch-b.md'), '# B changed\n')
+  await new Promise((resolve) => setTimeout(resolve, 3200))
+  assert.deepEqual(
+    auto.created.map((entry) => entry.request.target.sessionId),
+    ['session-watch-b', 'session-watch-a'],
+    'the other author is skipped on the next change'
+  )
+  stop()
+  for (const entry of auto.created) assert.equal(entry.actor, undefined, 'automatic delivery has no model actor')
+  contains(auto.created[0]?.request.title || '', '自动同步', 'auto-remind title')
+  contains(auto.created[0]?.request.prompt || '', '自动提醒', 'auto-remind prompt')
+})
+
+test('auto-remind controller toggles runtime state', () => {
+  const c = createFakeCtx()
+  const config = normalizeConfig({
+    directory: 'work/controller-room',
+    autoRemind: { enabled: false, debounceSeconds: 1, pollSeconds: 1 }
+  })
+  const controller = createAutoReminderController(c.ctx, config)
+  assert.equal(controller.status().enabled, false)
+  controller.setEnabled(true)
+  assert.equal(controller.status().enabled, true)
+  assert.equal(config.autoRemind.enabled, true)
+  controller.setEnabled(false)
+  assert.equal(controller.status().enabled, false)
+  controller.stop()
+})
+
+await testAsync('panel state reports registered sessions and auto-remind status', async () => {
+  const panelAgent = {
+    id: 'session-panel-a',
+    status: 'running',
+    session: { id: 'session-panel-a', header: { cwd: workspace } }
+  }
+  const panel = createFakeCtx({ agents: [panelAgent] })
+  apply(panel.ctx, { directory: 'work/panel-room', promptLanguage: 'zh' })
+  await call(
+    panel.registered,
+    'handoff_join',
+    { name: 'panel-a', doc: 'panel-a.md', content: '# panel A\n' },
+    execFor('session-panel-a')
+  )
+  const state = await buildPanelState(
+    panel.ctx,
+    normalizeConfig({ directory: 'work/panel-room', promptLanguage: 'zh' }),
+    { status: () => ({ enabled: true, debounceSeconds: 30 }) }
+  )
+  assert.equal(state.ok, true)
+  assert.equal(state.room, join(workspace, 'work', 'panel-room'))
+  assert.deepEqual(state.participants.map((entry) => entry.name), ['panel-a'])
+  assert.equal(state.participants[0].live, true)
+  assert.equal(state.autoRemind.enabled, true)
+})
+
+function invokePanel(handler, { method, url, body, headers = {} }) {
+  const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
+  request.method = method
+  request.url = url
+  request.headers = headers
+  request.socket = { remoteAddress: '127.0.0.1' }
+  let finish
+  const done = new Promise((resolve) => { finish = resolve })
+  const response = {
+    headersSent: false,
+    status: 0,
+    body: '',
+    writeHead(status, responseHeaders) {
+      this.status = status
+      this.responseHeaders = responseHeaders
+      this.headersSent = true
+    },
+    end(text) {
+      this.body = text || ''
+      finish(this)
+    }
+  }
+  handler(request, response)
+  return Promise.race([
+    done,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('panel handler timeout')), 2000))
+  ])
+}
+
+await testAsync('panel action route nudges registered sessions and rejects missing header', async () => {
+  const agent = {
+    id: 'session-panel-route',
+    status: 'running',
+    session: { id: 'session-panel-route', header: { cwd: workspace } }
+  }
+  const panel = createFakeCtx({ agents: [agent] })
+  apply(panel.ctx, { directory: 'work/panel-route', promptLanguage: 'zh' })
+  await call(
+    panel.registered,
+    'handoff_join',
+    { name: 'route-a', doc: 'route-a.md', content: '# route A\n' },
+    execFor('session-panel-route')
+  )
+  const auto = {
+    enabled: true,
+    status() { return { enabled: true } },
+    setEnabled(value) { this.enabled = value; return { enabled: value } }
+  }
+  const handler = createPanelHandler(panel.ctx, normalizeConfig({ directory: 'work/panel-route' }), auto)
+  const response = await invokePanel(handler, {
+    method: 'POST',
+    url: '/handoff-hub/action',
+    body: { action: 'nudge' },
+    headers: { 'x-handoff-hub': '1' }
+  })
+  assert.equal(response.status, 200)
+  const parsed = JSON.parse(response.body)
+  assert.equal(parsed.ok, true)
+  assert.equal(panel.created.length, 1)
+  assert.equal(panel.created[0].request.target.sessionId, 'session-panel-route')
+
+  const rejected = await invokePanel(handler, {
+    method: 'POST',
+    url: '/handoff-hub/action',
+    body: { action: 'nudge' },
+    headers: {}
+  })
+  assert.equal(rejected.status, 403)
 })
 
 // ---------------------------------------------------------------------------------------------------------------------

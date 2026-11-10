@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0 — 2026-11-11
+
+- **Session group panel**: a sidebar entry and full management page for the
+  current workspace (members, documents, live status, nudge one/all, remove,
+  invite, auto-reminder switch). Browser half registers Slot components; Host
+  routes are loopback-only and writes require `x-handoff-hub: 1`.
+- **Targeted directory-change reminders**: skip the changed document's author and
+  only nudge registered peers whose own document is older than (or missing
+  relative to) the change.
+- **Automatic merge**: `autoRemind.mergeSeconds` (default 60s) merges short bursts
+  into one reminder instead of sending a message per change.
+- 45 integration cases plus static manifest checks.
+
 ## 1.0.0 — 2026-11-10
 
 First public release.

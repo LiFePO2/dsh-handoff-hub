@@ -134,14 +134,42 @@ Handoff documents are model-authored evidence. The reminder therefore:
 
 References are pointers only; content is never embedded by the plugin.
 
+## Targeted auto reminder
+
+`autoRemind` is opt-in. A polling scan compares top-level `.md` mtime/size against
+a baseline, resets a debounce timer on changes, and at delivery:
+
+1. skips the author of every changed document;
+2. skips a peer whose own document is at least as new as every changed document;
+3. sends one reminder per remaining stale peer, listing only the changes newer
+   than that peer's document;
+4. holds a `mergeSeconds` window after a delivery, accumulating further changes
+   into the next single reminder.
+
+A missing/deleted changed document counts as newer (the peer should re-read or
+recreate context). If no stale peer remains, no Schedule task is created.
+
+## Management panel
+
+The browser half registers a `sidebar.panellist` entry and a `main` page. The page
+reads `GET /handoff-hub/state` and writes through `POST /handoff-hub/action`.
+Both routes are loopback-only; writes require the `x-handoff-hub` header. The
+Host chooses the workspace whose handoff room has registered members (live
+Session cwds first, deployment fallback last). Actions reuse the same audit and
+Schedule path as the tools: nudge, remove (roster only), invite, auto toggle.
+
 ## Stability invariants
 
-- No timers, watchers, polling, session-event writes, or system-prompt sections.
+- Default: no timers, watchers, polling, session-event writes, or system-prompt
+  sections. The optional `autoRemind` watcher adds only unref'd polling/debounce/
+  merge timers, disposed with the plugin; each scan is bounded and serial.
 - One `ctx.effect()` owns all tool registrations and returns their disposers.
 - All errors inside a tool are caught and rendered as a bounded report; no
   rejection escapes the tool call.
 - Optional services (`workingDirectory`, `agents`, `sessionTitle`) are read
   defensively; absence degrades the board, not the process.
+- The browser half only registers Slot components and uses theme tokens; the Host
+  routes are loopback-only and write-guarded by a custom header.
 - No third-party runtime imports.
 
 ## Testing
@@ -150,8 +178,9 @@ References are pointers only; content is never embedded by the plugin.
 real temporary workspace. It covers registration, unload, board, join, duplicate
 names, document ownership, case-insensitive collisions, path traversal, size
 limits, roster tampering, target auditing, failure isolation, references, leave,
-and task cleanup. `test/manifest.mjs` checks package metadata, patch wiring,
-locale metadata, icon, and the no-external-import rule.
+targeted auto reminders, and the panel routes (45 cases). `test/manifest.mjs`
+checks package metadata, patch wiring, locale metadata, icon, browser client
+registration, and the no-external-import rule.
 
 ## Compatibility
 

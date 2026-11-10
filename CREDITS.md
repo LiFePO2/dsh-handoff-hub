@@ -21,6 +21,9 @@ and which model reviewed it.
   findings drove the fail-closed target audit, strict session-id validation,
   duplicate-identity handling, room lock, bounded service awaits, documentation
   fixes, and the attribution section you are reading.
+- **1.1.0 features** (targeted auto reminder, merge window, session-group panel)
+  were implemented and covered by the offline suite without another external
+  model review.
 
 ## Human
 

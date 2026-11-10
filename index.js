@@ -36,6 +36,8 @@ import {
 } from './lib/room.js'
 import { boardReport, nudgePrompt, nudgeReport, noPeersReport } from './lib/prompts.js'
 import { HubError, comparablePath, comparableText, describeError, formatBytes, formatTime, oneLine, shortId } from './lib/util.js'
+import { createAutoReminderController } from './lib/watch.js'
+import { registerPanelRoutes } from './lib/panel.js'
 
 export const name = 'handoff-hub'
 
@@ -176,6 +178,13 @@ export function apply(ctx, rawConfig) {
       }
     }
   }, 'handoff-hub: register handoff_board, handoff_join, handoff_nudge and handoff_leave')
+
+  // Opt-in polling watcher. Disabled config registers no timers at all.
+  const autoRemind = createAutoReminderController(ctx, config)
+  ctx.effect(() => () => autoRemind.stop(), 'handoff-hub: auto-remind controller')
+
+  // Local management panel API. A profile without a web server keeps the tools.
+  ctx.effect(() => registerPanelRoutes(ctx, config, autoRemind), 'handoff-hub: management panel routes')
 }
 
 function makeDefinition(ctx, config, toolName, description, parameters, run) {
@@ -243,7 +252,8 @@ async function runBoard(ctx, config, _args, exec) {
     self,
     peers,
     unregistered: await listLiveSessions(ctx, agent, room, participants),
-    warnings
+    warnings,
+    autoRemind: config.autoRemind
   })
 }
 
@@ -349,7 +359,8 @@ async function joinLocked(ctx, config, args, exec, room) {
     self: { sessionId, registered: true, name: displayName, doc, absolute: docPath(room, doc), meta },
     peers,
     unregistered: [],
-    warnings: after.warnings
+    warnings: after.warnings,
+    autoRemind: config.autoRemind
   })
   // Two concurrent joins can pick the same new document; surface the conflict
   // instead of silently letting one roster entry shadow the other.

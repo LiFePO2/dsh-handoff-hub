@@ -41,6 +41,12 @@ you already use.
   example a usage guide) are listed for every target.
 - `handoff_leave` — remove only this session's roster entry. The handoff
   document is never deleted.
+- **Session group panel** — a sidebar entry and full page for managing the
+  current workspace's group: members, documents, live status, single/all nudges,
+  remove, invite an unregistered live session, and toggle directory reminders.
+- **Targeted directory-change reminders** — an optional watcher that skips the
+  changed document's author and only nudges peers whose own handoff document is
+  stale; short bursts are merged into one reminder.
 
 The plugin never calls a model API. It enqueues an ordinary user-role message
 through DSH's shipped [`ctx.schedule`](https://github.com/deepseek-ai/deepseek-harness)
@@ -129,6 +135,37 @@ When a session is done:
 handoff_leave
 ```
 
+## Session group panel
+
+The package ships a browser half (`dsh.client`) that adds a **Sessions** entry to
+the sidebar and a full management page. It shows the room, registered sessions,
+each document's size/time, live status, and unregistered live sessions in the
+same workspace. Actions:
+
+- **Nudge** one member or **Nudge all**;
+- **Remove** a member (roster only; the handoff document is kept);
+- **Invite** an unregistered live session (sends a Schedule invitation; it does
+  not register on that session's behalf);
+- **Auto reminder** switch — runtime-only; a reload restores the configured value.
+
+The page calls two loopback-only Host routes: `GET /handoff-hub/state` and
+`POST /handoff-hub/action`. Writes require an `x-handoff-hub: 1` header; the
+plugin exposes no token and never reads document content for the page.
+
+## Directory-change reminders
+
+Disabled by default (`autoRemind.enabled: false`). When enabled, the plugin polls
+the room's top-level `*.md` mtime/size and:
+
+1. debounces changes for `debounceSeconds` (default 30s);
+2. skips the changed document's author;
+3. nudges only registered peers whose own document is older than (or missing
+   relative to) the change — a peer already newer is considered synchronized;
+4. merges further changes during `mergeSeconds` (default 60s) into the next
+   reminder instead of sending a burst;
+5. starts from the current directory as a baseline, so historical changes are
+   not replayed; unregistered sessions are never targeted.
+
 ## Delivery semantics
 
 `handoff_nudge` creates a one-shot Schedule task per target with
@@ -177,6 +214,11 @@ profile configuration workflow):
     maxRecipients: 16           # 1..32
     maxDocBytes: 262144         # 4 KiB..4 MiB
     cleanupEndedTasks: false    # opt-in, see below
+    autoRemind:
+      enabled: false            # opt-in directory watcher
+      debounceSeconds: 30       # 1..600
+      pollSeconds: 10           # 1..120
+      mergeSeconds: 60          # 0..600; merge bursts
 ```
 
 `cleanupEndedTasks` deletes this plugin's ended tasks before a nudge, but the
@@ -242,6 +284,8 @@ The plugin is intentionally boring:
   rename locks;
 - bounded inputs and outputs (recipient cap, document cap, roster scan cap,
   report line cap);
+- the browser half only registers Slot components; the Host routes are
+  loopback-only and the write path requires a custom header;
 - no third-party runtime imports — only Node built-ins.
 
 ## Known limitations
@@ -298,8 +342,9 @@ node test/harness.mjs
 
 The offline harness uses a fake Cordis context and a real temporary directory.
 It covers registration, roster validation, tampered entries, duplicate names,
-path traversal, target auditing, failure isolation, references, leave, and
-unload. CI runs both files on Node 22 and 24.
+path traversal, target auditing, failure isolation, references, leave, unload,
+targeted auto reminders, and the management panel routes. 45 integration cases
+plus the static manifest checks; CI runs both files on Node 22 and 24.
 
 ## License
 

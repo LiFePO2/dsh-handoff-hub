@@ -29,14 +29,17 @@ await check('package name ends in dsh-handoff-hub', () => {
   assert.equal(pkg.type, 'module')
 })
 
-await check('entry, locale and icon are exported and shipped', () => {
+await check('entry, locale, icon and browser client are exported and shipped', () => {
   assert.equal(pkg.exports['.'], './index.js')
+  assert.equal(pkg.exports['./client'], './client.js')
   assert.equal(pkg.exports['./icon'], './icon.svg')
   assert.ok(pkg.exports['./locale/*.json'])
-  for (const required of ['index.js', 'lib', 'cordis.patch.yml', 'locale', 'icon.svg', 'README.md']) {
+  for (const required of ['index.js', 'client.js', 'lib', 'cordis.patch.yml', 'locale', 'icon.svg', 'README.md']) {
     assert.ok(pkg.files.includes(required), `files must include ${required}`)
   }
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
+  assert.equal(pkg.dsh.client.platform, 'web')
+  assert.equal(pkg.dsh.client.immediately, true)
 })
 
 await check('bundle patch inserts one matching row', async () => {
@@ -70,7 +73,9 @@ await check('runtime files import only Node built-ins and local modules', async 
     'lib/room.js',
     'lib/util.js',
     'lib/config.js',
-    'lib/prompts.js'
+    'lib/prompts.js',
+    'lib/watch.js',
+    'lib/panel.js'
   ]
   for (const file of files) {
     const source = await readFile(join(root, file), 'utf8')
@@ -80,6 +85,16 @@ await check('runtime files import only Node built-ins and local modules', async 
       assert.ok(allowed, `${file} imports non-local module ${specifier}`)
     }
   }
+})
+
+await check('browser client registers the package id and both panel slots', async () => {
+  const source = await readFile(join(root, 'client.js'), 'utf8')
+  assert.ok(source.includes(`id: '${pkg.name}'`), `client loader id must be ${pkg.name}`)
+  assert.ok(source.includes('__ModuleLoader__.load'))
+  assert.ok(source.includes("name: 'sidebar.panellist'"))
+  assert.ok(source.includes("name: 'main'"))
+  assert.ok(source.includes("key: 'handoff-hub'"))
+  assert.ok(!/^\\s*import\\s/m.test(source), 'client.js must stay a plain loader factory')
 })
 
 await check('README documents the four tools and the room layout', async () => {

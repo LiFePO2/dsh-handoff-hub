@@ -13,3 +13,11 @@
         # Opt-in: deleting ended tasks makes the Schedule service inject a
         # no-op "[SCHEDULE CHANGE]" notice into every involved live session.
         cleanupEndedTasks: false
+        # Directory-change auto reminder. Public default: off (set enabled: true
+        # to opt in). Reminders are targeted: the changed document's author is
+        # skipped, and only peers whose own handoff document is stale are nudged.
+        autoRemind:
+          enabled: false
+          debounceSeconds: 30
+          pollSeconds: 10
+          mergeSeconds: 60
