@@ -1,0 +1,8 @@
+node_modules/
+*.log
+*.tmp
+tmp/
+coverage/
+.handoff-hub/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,49 @@
+{
+  "name": "dsh-handoff-hub",
+  "version": "1.0.0",
+  "description": "Simultaneous handoff-document sync for independent DeepSeek Harness sessions: register a handoff file, browse peers, and nudge every peer to read each other's documents.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "handoff",
+    "multi-agent",
+    "multi-session",
+    "collaboration",
+    "cordis",
+    "reminder"
+  ],
+  "engines": {
+    "node": "^22.19 || >=24",
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "docs",
+    "README.md",
+    "README.zh.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/manifest.mjs && node test/harness.mjs"
+  },
+  "dsh": {
+    "verifiedAgainst": "0.2.2-rc.1",
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Handoff Hub">
+  <rect width="64" height="64" rx="14" fill="#0b3d91"/>
+  <path d="M12 20a5 5 0 0 1 5-5h20a5 5 0 0 1 5 5v9a5 5 0 0 1-5 5H25l-8 6v-6h-0a5 5 0 0 1-5-5z" fill="#e8f0ff"/>
+  <path d="M52 44a5 5 0 0 1-5 5H27a5 5 0 0 1-5-5v-9a5 5 0 0 1 5-5h14l8-6v6h.5a5 5 0 0 1 5 5z" fill="#8fb8ff"/>
+  <path d="M26 25h10M31 20v10" stroke="#0b3d91" stroke-width="3" stroke-linecap="round"/>
+  <path d="M33 34h4" stroke="#0b3d91" stroke-width="3" stroke-linecap="round"/>
+</svg>

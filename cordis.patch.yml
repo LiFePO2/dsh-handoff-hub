@@ -1,0 +1,15 @@
+# Handoff Hub — shared handoff-document sync for sibling DSH sessions.
+# `directory` is resolved against each calling session's working directory unless
+# an absolute path is supplied. All tools are Host-only.
+- insert:
+    - id: handoff-hub
+      name: 'dsh-handoff-hub'
+      config:
+        directory: 'work/handoff'
+        promptLanguage: 'zh'
+        nudgeDelaySeconds: 1
+        maxRecipients: 16
+        maxDocBytes: 262144
+        # Opt-in: deleting ended tasks makes the Schedule service inject a
+        # no-op "[SCHEDULE CHANGE]" notice into every involved live session.
+        cleanupEndedTasks: false
