@@ -61,6 +61,17 @@ plugin_manager install_bundle target=<克隆目录的绝对路径>
 > 如果你手动替换过 profile `node_modules` 里的包（例如自定义 `@openai/codex`
 > payload），请先备份或固定版本。本插件自身没有依赖，不会改动它们。
 
+## 在 DSH Discover 中安装
+
+本仓库自带格式 1 的插件市场索引。在 DSH 打开 **插件 → Discover → 添加市场索引**，
+填入：
+
+```text
+https://raw.githubusercontent.com/LiFePO2/dsh-handoff-hub/main/market/index.json
+```
+
+索引把本次发布锁定到包含插件代码的那个提交，Discover 会安装经过审查的同一版本。
+
 ## 快速开始
 
 每个协作会话登记一次：

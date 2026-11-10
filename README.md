@@ -78,6 +78,18 @@ The package is not on npm yet; a local directory install is the supported path.
 > them up or pin them first. This plugin has no dependencies and does not touch
 > them itself.
 
+## Discover in DSH
+
+This repository ships a format-1 plugin market index. In DSH, open
+**Plugins → Discover → Add market index** and enter:
+
+```text
+https://raw.githubusercontent.com/LiFePO2/dsh-handoff-hub/main/market/index.json
+```
+
+The index pins this release to the commit that contains the plugin, so Discover
+installs exactly the reviewed revision.
+
 ## Quick start
 
 In each collaborating session (once):

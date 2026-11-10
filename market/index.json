@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "title": {
+    "en": "Handoff Hub · DSH plugin index",
+    "zh": "交接中枢 · DSH 插件索引"
+  },
+  "description": {
+    "en": "Plugin index maintained by LiFePO2 (currently: dsh-handoff-hub).",
+    "zh": "LiFePO2 维护的 DSH 插件索引（目前：dsh-handoff-hub 交接中枢）。"
+  },
+  "plugins": [
+    {
+      "name": "dsh-handoff-hub",
+      "title": {
+        "en": "Handoff Hub",
+        "zh": "交接中枢"
+      },
+      "description": {
+        "en": "Simultaneous handoff-document sync for independent DSH sessions: durable Schedule nudges, target audit, no fixed workflow.",
+        "zh": "同一工作区多个独立 DSH 会话的交接文档互读提醒：持久化 Schedule 投递、目标审计、不绑定工作流。"
+      },
+      "author": "LiFePO2",
+      "homepage": "https://github.com/LiFePO2/dsh-handoff-hub",
+      "repository": {
+        "url": "https://github.com/LiFePO2/dsh-handoff-hub"
+      },
+      "versions": [
+        {
+          "version": "1.0.0",
+          "publishTimestamp": 1794322883,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/LiFePO2/dsh-handoff-hub",
+            "commit": "66b5ab52886a56ebba2d6017944ae2da7f024109"
+          }
+        }
+      ]
+    }
+  ]
+}
