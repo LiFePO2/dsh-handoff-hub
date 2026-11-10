@@ -16,8 +16,8 @@
         "zh": "交接中枢"
       },
       "description": {
-        "en": "Simultaneous handoff-document sync for independent DSH sessions: durable Schedule nudges, target audit, no fixed workflow.",
-        "zh": "同一工作区多个独立 DSH 会话的交接文档互读提醒：持久化 Schedule 投递、目标审计、不绑定工作流。"
+        "en": "Simultaneous handoff-document sync for independent DSH sessions: targeted directory-change reminders, session-group panel, durable Schedule nudges.",
+        "zh": "同一工作区多个独立 DSH 会话的交接文档互读提醒：定向目录变更提醒、对话组管理面板、持久化 Schedule 投递。"
       },
       "author": "LiFePO2",
       "homepage": "https://github.com/LiFePO2/dsh-handoff-hub",
@@ -26,12 +26,12 @@
       },
       "versions": [
         {
-          "version": "1.0.0",
-          "publishTimestamp": 1794322883,
+          "version": "1.1.0",
+          "publishTimestamp": 1794329566,
           "source": {
             "type": "git",
             "url": "https://github.com/LiFePO2/dsh-handoff-hub",
-            "commit": "66b5ab52886a56ebba2d6017944ae2da7f024109"
+            "commit": "24a0debd530f4fd17aacc1d457050543aa24afda"
           }
         }
       ]
