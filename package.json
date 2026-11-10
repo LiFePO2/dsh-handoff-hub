@@ -4,6 +4,14 @@
   "description": "Simultaneous handoff-document sync for independent DeepSeek Harness sessions: register a handoff file, browse peers, and nudge every peer to read each other's documents.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LiFePO2/dsh-handoff-hub.git"
+  },
+  "homepage": "https://github.com/LiFePO2/dsh-handoff-hub#readme",
+  "bugs": {
+    "url": "https://github.com/LiFePO2/dsh-handoff-hub/issues"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",

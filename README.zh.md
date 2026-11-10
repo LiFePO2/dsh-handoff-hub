@@ -39,7 +39,13 @@
 要求：DeepSeek Harness `>= 0.2.2-rc.1`，Node.js 22.19+ 或 24+，以及一个包含
 待协调会话的工作区。
 
-克隆或下载本仓库，然后让 DSH 代理安装本地包：
+克隆或下载本仓库：
+
+```bash
+git clone https://github.com/LiFePO2/dsh-handoff-hub.git
+```
+
+然后让 DSH 代理安装本地包：
 
 ```text
 plugin_manager install_bundle target=<克隆目录的绝对路径>

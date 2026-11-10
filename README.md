@@ -1,5 +1,7 @@
 # Handoff Hub
 
+[![test](https://github.com/LiFePO2/dsh-handoff-hub/actions/workflows/test.yml/badge.svg)](https://github.com/LiFePO2/dsh-handoff-hub/actions/workflows/test.yml)
+
 **Simultaneous handoff-document sync for independent DeepSeek Harness sessions.**
 
 > Unofficial community plugin. Not affiliated with or endorsed by DeepSeek.
@@ -49,7 +51,11 @@ service; each target session then handles that message with its own model.
 Requirements: DeepSeek Harness `>= 0.2.2-rc.1`, Node.js 22.19+ or 24+, and a
 workspace containing the sessions to coordinate.
 
-Clone or download this repository, then install the local package as a DSH
+```bash
+git clone https://github.com/LiFePO2/dsh-handoff-hub.git
+```
+
+Then install the local package as a DSH
 bundle. Ask your DSH agent to run:
 
 ```text
