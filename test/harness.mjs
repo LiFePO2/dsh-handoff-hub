@@ -55,7 +55,7 @@ function createFakeCtx(options = {}) {
   const ctx = {
     logger: { info() {}, warn() {} },
     get(name) {
-      if (name === 'workingDirectory') return { get: (session) => session?.header?.cwd ?? workspace }
+      if (name === 'workingDirectory') return { get: (session) => session?.header?.cwd }
       if (name === 'agents') return { list: () => options.agents ?? [peer, live, child, elsewhere] }
       if (name === 'sessionPersistence') return this.sessionPersistence
       return undefined
@@ -290,6 +290,40 @@ await testAsync('board skips a tampered roster entry instead of following its pa
   await rm(join(directory, 'session-tampered.json'), { force: true })
 })
 
+await testAsync('board rejects roster session ids with control characters', async () => {
+  const directory = join(room, '.handoff-hub', 'participants')
+  await writeFile(
+    join(directory, 'session-bad-id.json'),
+    JSON.stringify({ v: 1, sessionId: 'bad\nsession', name: 'injected', doc: 'injected.md' })
+  )
+  const { report } = await call(fake.registered, 'handoff_board', {}, execFor('session-self'))
+  contains(report, 'invalid session id', 'invalid roster id warning')
+  notContains(report, 'bad\nsession', 'control characters are not printed')
+  await rm(join(directory, 'session-bad-id.json'), { force: true })
+})
+
+await testAsync('board drops duplicate roster identities and names', async () => {
+  const directory = join(room, '.handoff-hub', 'participants')
+  await writeFile(
+    join(directory, 'session-dup-a.json'),
+    JSON.stringify({ v: 1, sessionId: 'session-dup', name: 'dup-one', doc: 'dup-one.md' })
+  )
+  await writeFile(
+    join(directory, 'session-dup-b.json'),
+    JSON.stringify({ v: 1, sessionId: 'session-dup', name: 'dup-two', doc: 'dup-two.md' })
+  )
+  await writeFile(
+    join(directory, 'session-dup-name.json'),
+    JSON.stringify({ v: 1, sessionId: 'session-dup-name', name: 'DUP-ONE', doc: 'dup-name.md' })
+  )
+  const { report } = await call(fake.registered, 'handoff_board', {}, execFor('session-self'))
+  contains(report, 'duplicate session id', 'duplicate session warning')
+  contains(report, 'duplicate display name', 'duplicate name warning')
+  await rm(join(directory, 'session-dup-a.json'), { force: true })
+  await rm(join(directory, 'session-dup-b.json'), { force: true })
+  await rm(join(directory, 'session-dup-name.json'), { force: true })
+})
+
 await testAsync('board sanitizes a roster display name', async () => {
   const directory = join(room, '.handoff-hub', 'participants')
   await writeFile(join(room, 'tampered.md'), '# tampered\n')
@@ -404,6 +438,28 @@ await testAsync('nudge refuses a non-array targets value instead of broadcasting
   contains(report, '[invalid_targets]', 'non-array targets')
 })
 
+await testAsync('nudge rejects a malformed target session id', async () => {
+  const { report } = await call(fake.registered, 'handoff_nudge', { targets: ['bad id'] }, execFor('session-self'))
+  contains(report, '[invalid_target]', 'malformed target id')
+})
+
+await testAsync('target audit fails closed when the target has no recorded workspace', async () => {
+  const noCwd = createFakeCtx({ stat: () => ({ header: {} }) })
+  apply(noCwd.ctx, { directory: join(workspace, 'work', 'absolute-room'), promptLanguage: 'zh', cleanupEndedTasks: false })
+  const { report } = await call(noCwd.registered, 'handoff_nudge', { targets: ['session-peer'] }, execFor('session-self'))
+  assert.equal(noCwd.created.length, 0, 'unverifiable target is not scheduled')
+  contains(report, '[target_unverified]', 'missing target cwd')
+})
+
+await testAsync('target audit fails closed when the caller workspace is unknown', async () => {
+  const noCallerCwd = createFakeCtx()
+  apply(noCallerCwd.ctx, { directory: join(workspace, 'work', 'absolute-room-2'), promptLanguage: 'zh', cleanupEndedTasks: false })
+  const exec = { agent: { id: 'session-self', session: { id: 'session-self', header: {} } }, signal: new AbortController().signal }
+  const { report } = await call(noCallerCwd.registered, 'handoff_nudge', { targets: ['session-peer'] }, exec)
+  assert.equal(noCallerCwd.created.length, 0, 'unknown caller workspace is not scheduled')
+  contains(report, '[workspace_unknown]', 'unknown caller workspace')
+})
+
 await testAsync('nudge delivers validated reference paths', async () => {
   await writeFile(join(workspace, 'guide.md'), '# usage guide\n')
   fake.created.length = 0
@@ -478,6 +534,28 @@ await testAsync('leave on an unregistered session is a no-op report', async () =
   apply(isolated.ctx, { directory: 'work/leave-room-2', promptLanguage: 'zh' })
   const { report } = await call(isolated.registered, 'handoff_leave', {}, execFor('session-self'))
   contains(report, '未登记', 'unregistered leave')
+})
+
+await testAsync('concurrent joins serialize and only one session claims a new document', async () => {
+  const race = createFakeCtx()
+  apply(race.ctx, { directory: 'work/race-room', promptLanguage: 'zh' })
+  const [first, second] = await Promise.all([
+    call(race.registered, 'handoff_join', { name: 'race-a', doc: 'race.md', content: 'A' }, execFor('session-race-a')),
+    call(race.registered, 'handoff_join', { name: 'race-b', doc: 'race.md', content: 'B' }, execFor('session-race-b'))
+  ])
+  const successes = [first, second].filter((result) => result.report.includes('已登记为'))
+  const refusals = [first, second].filter((result) => result.report.includes('[doc_taken]'))
+  assert.equal(successes.length, 1, 'exactly one join wins')
+  assert.equal(refusals.length, 1, 'the other join is refused by ownership')
+  const content = await readFile(join(workspace, 'work', 'race-room', 'race.md'), 'utf8')
+  assert.ok(content === 'A' || content === 'B')
+  const third = await call(
+    race.registered,
+    'handoff_join',
+    { name: 'race-c', doc: 'race-c.md', content: 'C' },
+    execFor('session-race-c')
+  )
+  contains(third.report, '已登记为 race-c', 'lock is released after the race')
 })
 
 // ---------------------------------------------------------------------------------------------------------------------

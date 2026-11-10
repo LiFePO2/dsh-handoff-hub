@@ -15,6 +15,7 @@
  */
 import { normalizeConfig } from './lib/config.js'
 import {
+  acquireRoomLock,
   auditTarget,
   callerCwd,
   callerSessionId,
@@ -257,8 +258,17 @@ function compareDocs(left, right) {
 /* ------------------------------------------------------------------------------------------------------------------ */
 
 async function runJoin(ctx, config, args, exec) {
+  const room = resolveRoom(ctx, config, exec.agent)
+  const release = await acquireRoomLock(room)
+  try {
+    return await joinLocked(ctx, config, args, exec, room)
+  } finally {
+    await release()
+  }
+}
+
+async function joinLocked(ctx, config, args, exec, room) {
   const agent = exec.agent
-  const room = resolveRoom(ctx, config, agent)
   const sessionId = callerSessionId(agent)
   const language = config.promptLanguage
 
@@ -369,17 +379,22 @@ async function runLeave(ctx, config, _args, exec) {
   const room = resolveRoom(ctx, config, agent)
   const sessionId = callerSessionId(agent)
   const language = config.promptLanguage
-  const { participants } = await readParticipants(room)
-  const self = participants.find((participant) => participant.sessionId === sessionId)
-  if (!self) {
+  const release = await acquireRoomLock(room)
+  try {
+    const { participants } = await readParticipants(room)
+    const self = participants.find((participant) => participant.sessionId === sessionId)
+    if (!self) {
+      return language === 'en'
+        ? '[handoff-hub] Not registered\nThis session is not in the handoff room; nothing to remove.'
+        : '[交接中枢] 未登记\n本会话不在交接室名单中，无需退出。'
+    }
+    await removeParticipant(room, sessionId)
     return language === 'en'
-      ? '[handoff-hub] Not registered\nThis session is not in the handoff room; nothing to remove.'
-      : '[交接中枢] 未登记\n本会话不在交接室名单中，无需退出。'
+      ? `[handoff-hub] Left the handoff room\nRemoved the roster entry for ${self.name}; the document ${docPath(room, self.doc)} was left untouched.`
+      : `[交接中枢] 已退出交接室\n已移除 ${self.name} 的登记；文档 ${docPath(room, self.doc)} 保留不动。`
+  } finally {
+    await release()
   }
-  await removeParticipant(room, sessionId)
-  return language === 'en'
-    ? `[handoff-hub] Left the handoff room\nRemoved the roster entry for ${self.name}; the document ${docPath(room, self.doc)} was left untouched.`
-    : `[交接中枢] 已退出交接室\n已移除 ${self.name} 的登记；文档 ${docPath(room, self.doc)} 保留不动。`
 }
 
 /* ------------------------------------------------------------------------------------------------------------------ */
@@ -486,6 +501,11 @@ async function runNudge(ctx, config, args, exec) {
   docs.sort(compareDocs)
 
   const bySession = new Map(participants.map((participant) => [participant.sessionId, participant]))
+  // Bound the Host await per target; a wedged service must not hold the whole
+  // fan-out forever.
+  const createSignal = exec?.signal
+    ? AbortSignal.any([exec.signal, AbortSignal.timeout(15_000)])
+    : AbortSignal.timeout(15_000)
   const settled = await Promise.allSettled(
     audited.map(async (targetId) => {
       const target = bySession.get(targetId)
@@ -508,7 +528,7 @@ async function runNudge(ctx, config, args, exec) {
           target: { kind: 'session', sessionId: targetId }
         },
         sessionId,
-        exec.signal
+        createSignal
       )
       return {
         sessionId: targetId,

@@ -4,6 +4,19 @@
 
 > Unofficial community plugin. Not affiliated with or endorsed by DeepSeek.
 
+## Project attribution
+
+- **Code work / implementation:** `deepseek-v4.1-flash` (DeepSeek Harness lead
+  agent, opencode provider route), 2026-11-10.
+- **Initial stability review:** `deepseek-v4.1-flash` (a separate same-model
+  subagent with a fresh context).
+- **Independent release review:** `gpt-6.1-sol` through the Codex subagent
+  (`subagent_codex`, reasoning effort `ultra`).
+- **Product direction, environment and acceptance:** the repository owner.
+
+Model names identify the tooling used for this release. A review is advisory and
+does not imply endorsement by any model provider. See [CREDITS.md](CREDITS.md).
+
 When several model sessions work in one workspace, each tends to write a handoff
 document — and then nobody reads the others' latest version. Handoff Hub gives
 those sessions a tiny shared room and a single durable operation that asks every
@@ -43,12 +56,21 @@ bundle. Ask your DSH agent to run:
 plugin_manager install_bundle target=<absolute path to the cloned directory>
 ```
 
+If the path contains spaces, quote it, for example
+`target="D:\plugins\dsh-handoff-hub"`.
+
 `plugin_manager` needs full-access approval. The bundle inserts one row named
 `handoff-hub`; its four tools appear for every agent after the row activates.
 No restart is normally required for a new bundle, but a linked-package update is
 only picked up after the row is reloaded or DSH restarts.
 
 The package is not on npm yet; a local directory install is the supported path.
+
+> **Profile package-manager warning.** Installing any DSH bundle runs the
+> profile's package manager. If you have manually patched packages under the
+> profile's `node_modules` (for example a custom `@openai/codex` payload), back
+> them up or pin them first. This plugin has no dependencies and does not touch
+> them itself.
 
 ## Quick start
 
@@ -210,12 +232,31 @@ The plugin is intentionally boring:
   never auto-nudges unregistered sessions.
 - Reading is asynchronous and not acknowledged. A peer can receive a reminder
   and still choose not to sync; the plugin cannot prove it read anything.
-- Two sessions joining with the same new document name can race; the last writer
-  wins and `handoff_join` reports a `[roster_conflict]` warning.
+- Two sessions joining with the same new document name can race; the room lock
+  serializes plugin joins and the second join is refused with `doc_taken`, but an
+  external writer can still race a join. The last writer wins in that case and
+  `handoff_join` reports a `[roster_conflict]` warning when it detects duplicate
+  ownership.
 - Ended Schedule tasks accumulate unless `cleanupEndedTasks` is enabled; they are
   harmless rows in the Host task list.
 - Not a substitute for [`dsh-collab`](https://github.com/sessionhive/dsh-collab)
   when you need work orders, flow handoff, or a dashboard.
+
+## Uninstalling
+
+Remove the bundle (or disable its row). The room directory, handoff documents,
+and roster entries are left untouched. **Reminders already queued in the
+Schedule service are durable and may still be delivered after uninstall**; delete
+them from the Automation tasks page if that is not desired.
+
+## Compatibility
+
+| Component | Status |
+|---|---|
+| DSH | tested with `0.2.2-rc.1`; requires `>= 0.2.2-rc.1 < 0.3.0` |
+| Node.js | tested with 22.19 and 24; CI runs both |
+| OS | Windows 10/11 tested; no native code, so Linux/macOS are expected to work but are not CI-tested |
+| Models | provider-agnostic: the plugin never calls a model API; any model a session already uses can participate |
 
 ## Related projects
 

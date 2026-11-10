@@ -4,6 +4,15 @@
 
 > 社区非官方插件，与 DeepSeek 官方无隶属或背书关系。
 
+## 项目分工（模型归属）
+
+- **代码实现**：`deepseek-v4.1-flash`（DeepSeek Harness lead agent，opencode 路由），2026-11-10。
+- **首轮稳定性审查**：`deepseek-v4.1-flash`（另开的同模型子代理，fresh context）。
+- **独立发布审查**：`gpt-6.1-sol`，经 Codex 子代理（`subagent_codex`，reasoning effort `ultra`）。
+- **产品方向、环境与验收**：仓库所有者。
+
+模型名称只说明本次发布使用的工具；审查是建议性的，不代表任何模型提供方的背书。详见 [CREDITS.md](CREDITS.md)。
+
 多个模型会话在同一工作区并行时，每个会话都会写交接文档，但很少有人去读别人
 最新的那一份。Handoff Hub 提供一个很小的共享“交接室”和一个持久化操作：同时
 提醒所有同伴读取当前交接文档，并更新自己的那一份。
@@ -36,9 +45,15 @@
 plugin_manager install_bundle target=<克隆目录的绝对路径>
 ```
 
+路径含空格时请加引号，例如 `target="D:\plugins\dsh-handoff-hub"`。
+
 `plugin_manager` 需要 full-access 审批。bundle 会插入一行 `handoff-hub`；
 激活后四个工具对所有 agent 可见。该包尚未发布到 npm，本地目录安装是当前
 支持的方式。
+
+> **Profile 包管理器警告**：安装任何 DSH bundle 都会在 profile 里执行包管理器。
+> 如果你手动替换过 profile `node_modules` 里的包（例如自定义 `@openai/codex`
+> payload），请先备份或固定版本。本插件自身没有依赖，不会改动它们。
 
 ## 快速开始
 
@@ -179,11 +194,27 @@ bundle 的 patch 自带默认值；可在 profile 的 `cordis.patch.yml` 里用�
 
 - 每个同伴需先登记，或在 `targets` 中显式指定；不会自动打扰未登记会话。
 - 读取是异步的、没有确认机制；插件无法证明某个会话真的读了文档。
-- 两个会话同时用同一个新文档名登记时是 last-writer-wins，`handoff_join` 会给出
-  `[roster_conflict]` 警告。
+- 两个会话同时用同一个新文档名登记时，房间锁会把插件内的 join 串行化，第二个
+  join 会收到 `doc_taken`；但外部写入仍可能与 join 竞争，此时是 last-writer-wins，
+  `handoff_join` 检测到重复归属时会给出 `[roster_conflict]` 警告。
 - 已结束的 Schedule 任务会累积，除非开启 `cleanupEndedTasks`；它们只是任务
   列表里的无害记录。
 - 需要工单、flow 接力、看板时请用 [`dsh-collab`](https://github.com/sessionhive/dsh-collab)。
+
+## 卸载
+
+移除 bundle（或禁用该行）即可。交接室目录、交接文档和登记文件都会保留。
+**已经排入 Schedule 服务的提醒是持久化的，卸载后仍可能被投递**；如果不希望
+它们送达，请到 Automation tasks 页面删除对应任务。
+
+## 兼容性
+
+| 组件 | 状态 |
+|---|---|
+| DSH | 以 `0.2.2-rc.1` 测试；要求 `>= 0.2.2-rc.1 < 0.3.0` |
+| Node.js | 以 22.19 与 24 测试；CI 两个版本都跑 |
+| 操作系统 | Windows 10/11 实测；无原生代码，Linux/macOS 预期可用但未在 CI 覆盖 |
+| 模型 | provider 无关：插件自身不调用模型 API，会话原本用什么模型都能参与 |
 
 ## 相关项目
 

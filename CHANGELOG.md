@@ -11,4 +11,8 @@ First public release.
 - `references`: up to 5 workspace-local `.md`/`.markdown`/`.txt` pointers included in every reminder (useful for sharing a usage guide).
 - Prompt-injection boundary: reminder text marks documents as evidence, not instructions, and labels requester notes as untrusted.
 - Stability: no timers, watchers, session-event writes, or prompt sections; effect-scoped tool registration; per-target failure isolation; atomic writes with Windows rename retry; bounded inputs and outputs; zero third-party runtime dependencies.
-- Offline test suite: 33 integration cases plus static manifest checks.
+- Offline test suite: 39 integration cases plus static manifest checks.
+- Release review hardening: fail-closed target workspace audit, strict Session-id
+  validation, duplicate roster identity/name rejection, atomic room lock for
+  join/leave, and bounded awaits around persistence and Schedule calls.
+- Added `CREDITS.md` with explicit implementation and review model attribution.

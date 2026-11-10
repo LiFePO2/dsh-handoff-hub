@@ -57,8 +57,23 @@ shared mutable index and therefore no roster-wide write lock: concurrent joins
 touch different files.
 
 Roster entries are treated as untrusted input. On read, `doc` is re-validated with
-the same rules used on write and `name` is sanitized. Invalid entries are skipped
-and reported, never followed.
+the same rules used on write, `name` is sanitized, the Session id must match the
+Session-id grammar, and duplicate Session ids or display names are dropped with a
+warning. Invalid entries are skipped and reported, never followed.
+
+### Roster lock
+
+`handoff_join` and `handoff_leave` serialize through an atomic directory lock
+(`<room>/.handoff-hub/join.lock`). `mkdir` is atomic on every supported platform.
+A crashed holder is recovered after 60 seconds; a waiter gives up after about
+1.6 seconds with a `room_busy` error. The lock covers the read → validate →
+write sequence, so two plugin joins cannot both claim the same new document.
+
+### Strict Session ids
+
+Session ids read from the roster or supplied as explicit targets must match
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,199}`. This prevents control characters and
+newlines from reaching reports or reminder prompts through a hand-edited roster.
 
 ## Nudge sequence
 
@@ -73,7 +88,8 @@ and reported, never followed.
 6. Build one prompt per target, listing peer documents (excluding the target's
    own) and the references.
 7. `Promise.allSettled` over `ctx.schedule.create({ timing: after, target:
-   session })`.
+   session })`. Each Schedule call gets a 15-second abort budget; the target audit
+   gets 5 seconds. A wedged Host service therefore fails only its own target.
 8. Map results back to every requested target, including refusals, and render a
    per-target receipt.
 
@@ -97,8 +113,10 @@ A target that fails validation or scheduling never affects the others.
 
 The roster is a convenience, not an authority. A model or user can edit a roster
 file, so the plugin re-checks every target against durable Session storage
-immediately before scheduling. This prevents a tampered roster from sending
-reminders to another workspace or to a delegated subagent Session.
+immediately before scheduling: the Session must exist, must not be a delegated
+child, and its stored `cwd` must be present and equal to the caller's workspace.
+Missing workspace information fails closed. This prevents a tampered roster from
+sending reminders to another workspace or to a delegated subagent Session.
 
 The audit needs `ctx.sessionPersistence`. If that service is unavailable the
 target is refused rather than trusted; the plugin does not fall back to the
