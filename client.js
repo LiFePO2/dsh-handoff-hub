@@ -20,6 +20,7 @@ window.__ModuleLoader__.load({
     const fallbackSnapshot = () => FALLBACK_LOCALE
     let translate = (key) => key
     let localeService = null
+    let pluginCtx = null
 
     const DICT_ZH = {
       nav: '对话组',
@@ -102,10 +103,12 @@ window.__ModuleLoader__.load({
     }
 
     const CSS = `
-      .hh-page { box-sizing: border-box; height: 100%; overflow: auto; padding: 28px 32px 48px;
+      .hh-page { box-sizing: border-box; height: 100%; min-height: 0; width: 100%; overflow-x: hidden;
+        overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+        touch-action: pan-y; padding: 28px 32px 48px;
         color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base);
         font: 14px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
-      .hh-inner { max-width: 980px; margin: 0 auto; }
+      .hh-inner { max-width: 980px; min-height: min-content; margin: 0 auto; }
       .hh-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
       .hh-title { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
       .hh-subtitle { margin: 5px 0 0; font-size: 13px; color: var(--dsw-alias-label-secondary); }
@@ -168,6 +171,45 @@ window.__ModuleLoader__.load({
       .hh-error { margin-top: 16px; padding: 18px; border: 1px solid var(--dsw-alias-state-error-primary);
         border-radius: 12px; color: var(--dsw-alias-state-error-primary); font-size: 13px; }
       .hh-error p { margin: 4px 0 12px; color: var(--dsw-alias-label-secondary); }
+      .hh-page { font-size: var(--dsh-content-font-size, 14px); overscroll-behavior: contain; }
+      .hh-mobile-entry { display: none; }
+      .hh-mobile-chip { appearance: none; cursor: pointer; min-height: 44px; padding: 0 14px;
+        border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2);
+        background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary);
+        font: inherit; font-size: 13px; font-weight: 500; }
+      @media (max-width: 640px) {
+        .hh-mobile-entry { display: flex; justify-content: flex-end; padding: 0 12px 6px; }
+      }
+      @media (max-width: 640px), (pointer: coarse) {
+        .hh-page { position: absolute; inset: 0; height: auto; padding: 16px 14px calc(28px + env(safe-area-inset-bottom)); }
+        .hh-inner { max-width: 100%; }
+        .hh-head { flex-direction: column; align-items: stretch; gap: 10px; }
+        .hh-title { font-size: 18px; }
+        .hh-subtitle { font-size: 12px; }
+        .hh-actions { width: 100%; }
+        .hh-actions .hh-btn { flex: 1 1 auto; }
+        .hh-card { padding: 14px; margin-top: 12px; }
+        .hh-card-head { flex-wrap: wrap; }
+        .hh-row { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px 0; }
+        .hh-main { width: 100%; }
+        .hh-row-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+          width: 100%; gap: 8px; }
+        .hh-btn { min-height: 44px; padding: 0 14px; }
+        .hh-row-actions .hh-btn { width: 100%; }
+        .hh-switch { width: 52px; height: 44px; border-radius: 22px; }
+        .hh-switch::after { width: 36px; height: 36px; top: 4px; left: 4px; }
+        .hh-switch.hh-on::after { transform: translateX(8px); }
+        .hh-name { font-size: 14px; }
+        .hh-path { white-space: normal; overflow: visible; word-break: break-all; }
+        .hh-room code { word-break: break-all; }
+        .hh-empty { font-size: 13px; }
+      }
+      @media (max-width: 360px) {
+        .hh-row-actions { grid-template-columns: minmax(0, 1fr); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .hh-switch, .hh-switch::after { transition: none; }
+      }
     `
 
     function dictFor(language) {
@@ -175,7 +217,13 @@ window.__ModuleLoader__.load({
     }
 
     function tr(key, ...args) {
-      const dict = dictFor(localeService?.getSnapshot?.()?.active || 'zh')
+      let language = 'zh'
+      try {
+        language = localeService?.getSnapshot?.()?.active || 'zh'
+      } catch {
+        /* locale is optional; fall back to Chinese */
+      }
+      const dict = dictFor(language)
       const value = dict[key]
       if (typeof value === 'function') return value(...args)
       if (typeof value === 'string') return value
@@ -203,8 +251,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function Icon({ size = 16, active = false }) {
-      return h(
+    function Icon({ size = 16, active = false }) {      return h(
         'svg',
         {
           viewBox: '0 0 32 32',
@@ -250,12 +297,114 @@ window.__ModuleLoader__.load({
       return data
     }
 
-    function Page() {
-      const locale = useSyncExternalStore(
-        localeService?.subscribe || fallbackSubscribe,
-        localeService?.getSnapshot || fallbackSnapshot,
-        localeService?.getSnapshot || fallbackSnapshot
+    function Panel() {
+      return h(PanelBoundary, null, h(Page))
+    }
+
+    class PanelBoundary extends React.Component {
+      constructor(props) {
+        super(props)
+        this.state = { error: null }
+      }
+      static getDerivedStateFromError(error) {
+        return { error }
+      }
+      componentDidCatch(error, info) {
+        try {
+          console.error('handoff-hub panel crashed', error, info)
+        } catch {
+          /* console is best effort */
+        }
+      }
+      render() {
+        if (!this.state.error) return this.props.children
+        const message = String(this.state.error?.message || this.state.error || 'unknown error')
+        return h('div', {
+          style: {
+            boxSizing: 'border-box',
+            minHeight: '100%',
+            padding: '24px 18px',
+            color: 'var(--dsw-alias-label-primary)',
+            background: 'var(--dsw-alias-bg-base)',
+            font: '14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif'
+          }
+        }, h('div', {
+          style: {
+            maxWidth: '640px',
+            margin: '0 auto',
+            padding: '16px',
+            border: '1px solid var(--dsw-alias-state-error-primary)',
+            borderRadius: '12px'
+          }
+        },
+        h('div', { style: { fontWeight: 600, marginBottom: '6px' } }, '对话组加载失败'),
+        h('div', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '12px', wordBreak: 'break-word' } }, message),
+        h('button', {
+          type: 'button',
+          style: {
+            marginTop: '12px',
+            minHeight: '44px',
+            padding: '0 14px',
+            borderRadius: '8px',
+            border: '1px solid var(--dsw-alias-border-l2)',
+            background: 'transparent',
+            color: 'inherit',
+            font: 'inherit'
+          },
+          onClick: () => this.setState({ error: null })
+        }, '重试')))
+      }
+    }
+
+    function PanelHost({ renderSlot }) {
+      const child = typeof renderSlot === 'function' ? renderSlot('handoff-hub.page', {}) : null
+      if (child !== null && child !== undefined) return child
+      return h('div', {
+        style: {
+          padding: '24px 18px',
+          color: 'var(--dsw-alias-label-secondary)',
+          font: '14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif'
+        }
+      }, '对话组页面未挂载')
+    }
+
+    function MobileEntry() {
+      const open = () => {
+        try {
+          pluginCtx?.get?.('layout')?.selectPanel?.('handoff-hub')
+        } catch {
+          /* the layout service may not be ready on a non-standard shell */
+        }
+      }
+      return h('div', { className: 'hh-mobile-entry' },
+        h('button', {
+          type: 'button',
+          className: 'hh-mobile-chip',
+          'aria-label': tr('nav'),
+          onClick: open
+        }, tr('nav'))
       )
+    }
+
+    function Page() {
+      const subscribe = useCallback((onChange) => {
+        try {
+          const off = localeService?.subscribe?.(onChange)
+          return typeof off === 'function' ? off : () => {}
+        } catch {
+          return () => {}
+        }
+      }, [])
+      const getSnapshot = useCallback(() => {
+        try {
+          const snapshot = localeService?.getSnapshot?.()
+          return snapshot && typeof snapshot === 'object' ? snapshot : FALLBACK_LOCALE
+        } catch {
+          return FALLBACK_LOCALE
+        }
+      }, [])
+      const locale = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+      const localeActive = locale && typeof locale === 'object' ? locale.active : 'zh'
       const [state, setState] = useState({ status: 'loading', data: null, error: null })
       const [busy, setBusy] = useState('')
       const [notice, setNotice] = useState(null)
@@ -341,7 +490,7 @@ window.__ModuleLoader__.load({
         ))
       }
 
-      return h('div', { className: 'hh-page', 'data-locale': locale.active }, h('style', null, CSS), h('div', { className: 'hh-inner' },
+      return h('div', { className: 'hh-page', 'data-locale': localeActive }, h('style', null, CSS), h('div', { className: 'hh-inner' },
         h('header', { className: 'hh-head' },
           h('div', null,
             h('h1', { className: 'hh-title' }, tr('title')),
@@ -458,6 +607,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
+        pluginCtx = ctx
         ctx.effect(() => ctx.locale.register(NS, { zh: DICT_ZH, en: DICT_EN }), 'handoff-hub: panel copy')
         translate = ctx.locale.bind(NS)
         localeService = ctx.locale
@@ -473,8 +623,27 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',
           key: 'handoff-hub',
+          locale: NS,
+          children: {
+            'handoff-hub.page': { kind: 'single', scope: 'root' }
+          }
+        }, PanelHost))
+
+        // Mirror the shipped page pattern: the main cell owns one child slot,
+        // so the page is mounted through renderSlot rather than assumed direct.
+        ctx.slots.inject('handoff-hub.page', () => ctx.slots.register({
+          name: 'handoff-hub.page',
           locale: NS
-        }, Page))
+        }, Panel))
+
+        // A phone-width shortcut beside the composer; CSS hides it on wide
+        // screens. It is a view action only and opens the same main panel.
+        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+          name: 'conversation.composer.dock',
+          id: 'handoff-hub-entry',
+          order: 20,
+          locale: NS
+        }, MobileEntry))
       }
     }
   }

@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.4 — 2026-11-19
+
+- **`handoff_dispatch`**: Router → Worker task assignment over the Schedule
+  service. The task and acceptance text sit in a non-authoritative
+  `<<<DISPATCH_DATA … DISPATCH_DATA>>>` block that cannot override a Worker's
+  charter; the reminder title uses a dedicated `[handoff-dispatch]` marker so
+  dispatch tasks are never merged with sync reminders or swept by the ended-task
+  cleanup. Task/acceptance lengths are bounded, control characters and
+  self-targets are rejected, the Schedule call carries a 15 s abort signal, and a
+  missing task id reports `dispatched: false` instead of a false success.
+- **`handoff_purge_stale`**: deletes queued handoff/dispatch tasks whose target
+  can no longer receive them — missing, archived, cross-workspace, or present but
+  failing to resume (for example a preset that cannot be restored). `dryRun`
+  previews per-task reasons; `sessionIds` purges explicit dead targets; the
+  caller and every current roster member are always protected.
+- Hardening: shared schedule-marker helpers, per-target failure isolation, and
+  the inline `[unknown_target]`/`[invalid_reference]` paths kept intact.
+- Test suite grows to 70 integration cases plus static manifest checks.
+
+
 ## 1.1.0 — 2026-11-11
 
 - **Session group panel**: a sidebar entry and full management page for the

@@ -1,6 +1,6 @@
-# Handoff Hub — shared handoff-document sync for sibling DSH sessions.
-# `directory` is resolved against each calling session's working directory unless
-# an absolute path is supplied. All tools are Host-only.
+# Handoff Hub — workspace-local handoff synchronization for sibling model sessions.
+# The room directory is resolved relative to each calling session's working directory
+# unless an absolute path is supplied. All tools are Host-only.
 - insert:
     - id: handoff-hub
       name: 'dsh-handoff-hub'
@@ -13,11 +13,13 @@
         # Opt-in: deleting ended tasks makes the Schedule service inject a
         # no-op "[SCHEDULE CHANGE]" notice into every involved live session.
         cleanupEndedTasks: false
-        # Directory-change auto reminder. Public default: off (set enabled: true
-        # to opt in). Reminders are targeted: the changed document's author is
-        # skipped, and only peers whose own handoff document is stale are nudged.
+        # Local workspace: directory-change auto reminder is ON with a 30s
+        # debounce and a 5s poll. Set enabled: false to switch it off.
         autoRemind:
-          enabled: false
+          enabled: true
           debounceSeconds: 30
-          pollSeconds: 10
+          pollSeconds: 5
           mergeSeconds: 60
+        autoNudgeCooldownMinutes: 10
+        autoNudgeDailyCap: 24
+        autoNudgeSilenceAfter: 2

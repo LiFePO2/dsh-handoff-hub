@@ -1,7 +1,7 @@
 {
   "name": "dsh-handoff-hub",
-  "version": "1.1.0",
-  "description": "Simultaneous handoff-document sync for independent DeepSeek Harness sessions, with targeted directory-change reminders and a session-group management panel.",
+  "version": "1.2.4",
+  "description": "Simultaneous handoff-document sync for independent DeepSeek Harness sessions: targeted reminders, Router-to-Worker task dispatch, stale-queue purge, and a session-group panel.",
   "type": "module",
   "license": "MIT",
   "repository": {

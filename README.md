@@ -41,6 +41,18 @@ you already use.
   example a usage guide) are listed for every target.
 - `handoff_leave` — remove only this session's roster entry. The handoff
   document is never deleted.
+- `handoff_dispatch` — Router → Worker assignment: one durable Schedule task
+  carrying the task, acceptance criteria and reference paths. The text is wrapped
+  in a non-authoritative data block and marked `[handoff-dispatch]`, so it never
+  merges with sync reminders. Rejects self-targets and control characters, bounds
+  task/acceptance length, and reports `dispatched: false` unless the Schedule
+  service returned a task id.
+- `handoff_nudge_status` — read delivery state of this plugin's queued reminders
+  and dispatches without sending anything.
+- `handoff_purge_stale` — delete queued tasks whose target can no longer receive
+  them (missing, archived, cross-workspace, or present but failing to resume).
+  `dryRun` previews; `sessionIds` purges explicit dead targets; the caller and
+  current roster members are always protected.
 - **Session group panel** — a sidebar entry and full page for managing the
   current workspace's group: members, documents, live status, single/all nudges,
   remove, invite an unregistered live session, and toggle directory reminders.

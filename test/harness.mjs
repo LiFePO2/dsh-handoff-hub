@@ -12,8 +12,9 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { apply } from '../index.js'
 import { normalizeConfig } from '../lib/config.js'
-import { diffRoomDocs, scanRoomDocs, startAutoReminder, createAutoReminderController } from '../lib/watch.js'
+import { diffRoomDocs, resolveWatchRoom, scanRoomDocs, startAutoReminder, createAutoReminderController, autoInitialDelaySeconds, autoQuotaFor, pendingHandoffTasks, scheduleMergedReminder } from '../lib/watch.js'
 import { buildPanelState, createPanelHandler } from '../lib/panel.js'
+import { boardReport } from '../lib/prompts.js'
 
 const workspace = await mkdtemp(join(tmpdir(), 'handoff-hub-'))
 const room = join(workspace, 'work', 'handoff')
@@ -49,6 +50,7 @@ function createFakeCtx(options = {}) {
   const registered = new Map()
   const created = []
   const deleted = []
+  const edits = []
   const effectDisposers = []
   const logs = []
 
@@ -63,6 +65,8 @@ function createFakeCtx(options = {}) {
       if (name === 'workingDirectory') return { get: (session) => session?.header?.cwd, defaultDirectory: workspace }
       if (name === 'agents') return { list: () => options.agents ?? [peer, live, child, elsewhere] }
       if (name === 'sessionPersistence') return this.sessionPersistence
+      if (name === 'workspaceRegistry') return { archivedSessionIds: options.archivedSessionIds ?? [] }
+      if (name === 'sessionController') return options.sessionController
       return undefined
     },
     sessionPersistence: {
@@ -92,13 +96,57 @@ function createFakeCtx(options = {}) {
         created.push({ request, actor, entry })
         return entry
       },
-      async list() {
-        return { items: options.tasks ?? [], shown: (options.tasks ?? []).length, total: (options.tasks ?? []).length, limit: 200, offset: 0 }
+      async list(request = {}) {
+        const now = Date.now()
+        for (const item of created) {
+          if (item.entry.status === 'active' && Date.parse(item.entry.scheduledAt) <= now) {
+            item.entry.status = 'ended'
+          }
+        }
+        const all = [...created.map((item) => item.entry), ...(options.tasks ?? [])]
+        const items = request?.active === true ? all.filter((task) => task.status === 'active') : all
+        return { items, shown: items.length, total: items.length, limit: 200, offset: 0 }
+      },
+      async view(request) {
+        const record =
+          created.find((entry) => entry.entry.id === request.id)?.entry ||
+          (options.tasks ?? []).find((task) => task.id === request.id)
+        return record ?? { id: request.id, code: 'schedule_not_found' }
+      },
+      async run(request) {
+        if (options.runError) throw options.runError
+        const record = await this.view(request)
+        if (!record || record.code) return record
+        if (options.runPending) return { id: request.id, code: 'schedule_execution_pending' }
+        record.status = 'ended'
+        record.lastDelivery = {
+          scheduledAt: record.scheduledAt,
+          deliveredAt: new Date().toISOString(),
+          messageId: `message-${request.id}`,
+          targetSessionId: record.target?.sessionId
+        }
+        return record
       },
       async edit(request, actor) {
         if (options.editError) throw options.editError(request)
-        deleted.push({ ...request, actor })
-        return { id: request.id, deleted: true }
+        edits.push({ ...request, actor })
+        if (request.action === 'delete') {
+          const item = created.find((entry) => entry.entry.id === request.id)
+          if (item) item.entry.status = 'ended'
+          deleted.push({ ...request, actor })
+          return { id: request.id, deleted: true }
+        }
+        const record =
+          created.find((entry) => entry.entry.id === request.id)?.entry ||
+          (options.tasks ?? []).find((task) => task.id === request.id)
+        if (!record) return { id: request.id, code: 'schedule_not_found' }
+        Object.assign(record, request.patch)
+        if (request.patch?.timing?.kind === 'after') {
+          record.scheduledAt = new Date(Date.now() + request.patch.timing.after_seconds * 1000).toISOString()
+        } else if (request.patch?.timing?.kind === 'at') {
+          record.scheduledAt = request.patch.timing.at
+        }
+        return record
       }
     },
     tools: {
@@ -114,7 +162,7 @@ function createFakeCtx(options = {}) {
       return disposer
     }
   }
-  return { ctx, registered, created, deleted, effectDisposers, logs }
+  return { ctx, registered, created, deleted, edits, effectDisposers, logs }
 }
 
 function execFor(sessionId, header = {}) {
@@ -141,8 +189,11 @@ apply(fake.ctx, {
   cleanupEndedTasks: true
 })
 
-test('registers exactly the four handoff tools', () => {
-  assert.deepEqual([...fake.registered.keys()].sort(), ['handoff_board', 'handoff_join', 'handoff_leave', 'handoff_nudge'])
+test('registers every handoff tool', () => {
+  assert.deepEqual(
+    [...fake.registered.keys()].sort(),
+    ['handoff_board', 'handoff_dispatch', 'handoff_join', 'handoff_leave', 'handoff_nudge', 'handoff_nudge_retry', 'handoff_nudge_status', 'handoff_purge_stale']
+  )
   for (const definition of fake.registered.values()) {
     assert.equal(typeof definition.execute, 'function')
     assert.equal(typeof definition.output.render, 'function')
@@ -161,15 +212,26 @@ test('auto-remind config defaults off and clamps invalid values', () => {
   assert.equal(defaults.autoRemind.debounceSeconds, 30)
   assert.equal(defaults.autoRemind.pollSeconds, 10)
   assert.equal(defaults.autoRemind.mergeSeconds, 60)
-  const tuned = normalizeConfig({ autoRemind: { enabled: true, debounceSeconds: 5, pollSeconds: 2, mergeSeconds: 2 } })
+  assert.equal(defaults.autoNudgeCooldownMinutes, 10)
+  assert.equal(defaults.autoNudgeDailyCap, 24)
+  assert.equal(defaults.autoNudgeSilenceAfter, 2)
+  const tuned = normalizeConfig({ autoRemind: { enabled: true, debounceSeconds: 5, pollSeconds: 2, mergeSeconds: 2 }, autoNudgeCooldownMinutes: 5, autoNudgeDailyCap: 8, autoNudgeSilenceAfter: 3 })
   assert.equal(tuned.autoRemind.enabled, true)
   assert.equal(tuned.autoRemind.debounceSeconds, 5)
   assert.equal(tuned.autoRemind.pollSeconds, 2)
   assert.equal(tuned.autoRemind.mergeSeconds, 2)
-  const clamped = normalizeConfig({ autoRemind: { enabled: true, debounceSeconds: 9999, pollSeconds: 9999, mergeSeconds: 9999 } })
+  assert.equal(tuned.autoNudgeCooldownMinutes, 5)
+  assert.equal(tuned.autoNudgeDailyCap, 8)
+  assert.equal(tuned.autoNudgeSilenceAfter, 3)
+  const clamped = normalizeConfig({ autoRemind: { enabled: true, debounceSeconds: 9999, pollSeconds: 9999, mergeSeconds: 9999 }, autoNudgeCooldownMinutes: 9999, autoNudgeDailyCap: 9999, autoNudgeSilenceAfter: 9999 })
   assert.equal(clamped.autoRemind.debounceSeconds, 30)
   assert.equal(clamped.autoRemind.pollSeconds, 10)
   assert.equal(clamped.autoRemind.mergeSeconds, 60)
+  assert.equal(clamped.autoNudgeCooldownMinutes, 10)
+  assert.equal(clamped.autoNudgeDailyCap, 24)
+  assert.equal(clamped.autoNudgeSilenceAfter, 2)
+  assert.equal(autoInitialDelaySeconds(normalizeConfig({})), 60)
+  assert.equal(autoInitialDelaySeconds(normalizeConfig({ autoRemind: { mergeSeconds: 2 } })), 2)
 })
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -535,7 +597,7 @@ await testAsync('nudge refuses delegated subagent callers', async () => {
 await testAsync('unload disposes every registered tool', async () => {
   const disposable = createFakeCtx()
   apply(disposable.ctx, { directory: 'work/handoff' })
-  assert.equal(disposable.registered.size, 4)
+  assert.equal(disposable.registered.size, 8)
   for (const disposer of disposable.effectDisposers) {
     if (typeof disposer === 'function') disposer()
   }
@@ -614,7 +676,8 @@ await testAsync('auto-remind targets only stale peers and skips the changed docu
     normalizeConfig({
       directory: 'work/watch-room',
       promptLanguage: 'zh',
-      autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1, mergeSeconds: 0 }
+      autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1, mergeSeconds: 0 },
+      autoNudgeCooldownMinutes: 0
     })
   )
   await new Promise((resolve) => setTimeout(resolve, 300))
@@ -642,7 +705,8 @@ test('auto-remind controller toggles runtime state', () => {
   const c = createFakeCtx()
   const config = normalizeConfig({
     directory: 'work/controller-room',
-    autoRemind: { enabled: false, debounceSeconds: 1, pollSeconds: 1 }
+    autoRemind: { enabled: false, debounceSeconds: 1, pollSeconds: 1 },
+    autoNudgeCooldownMinutes: 0
   })
   const controller = createAutoReminderController(c.ctx, config)
   assert.equal(controller.status().enabled, false)
@@ -652,6 +716,150 @@ test('auto-remind controller toggles runtime state', () => {
   controller.setEnabled(false)
   assert.equal(controller.status().enabled, false)
   controller.stop()
+})
+
+await testAsync('auto-remind merges a later batch into an active task until send', async () => {
+  const auto = createFakeCtx()
+  apply(auto.ctx, { directory: 'work/merge-room', promptLanguage: 'zh' })
+  await call(auto.registered, 'handoff_join', { name: 'merge-a', doc: 'merge-a.md', content: '# A\n' }, execFor('session-merge-a'))
+  await call(auto.registered, 'handoff_join', { name: 'merge-b', doc: 'merge-b.md', content: '# B\n' }, execFor('session-merge-b'))
+  const stop = startAutoReminder(
+    auto.ctx,
+    normalizeConfig({
+      directory: 'work/merge-room',
+      promptLanguage: 'zh',
+      autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1, mergeSeconds: 5 },
+      autoNudgeCooldownMinutes: 0
+    })
+  )
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await writeFile(join(workspace, 'work', 'merge-room', 'merge-a.md'), '# A one\n')
+  await new Promise((resolve) => setTimeout(resolve, 2200))
+  const first = auto.created[0]
+  assert.ok(first, 'the first batch creates a task')
+  const firstScheduledAt = first.entry.scheduledAt
+  await writeFile(join(workspace, 'work', 'merge-room', 'merge-a.md'), '# A two\n')
+  await new Promise((resolve) => setTimeout(resolve, 2000))
+  stop()
+  assert.equal(auto.created.length, 1, 'the later batch updates the active task instead of creating another')
+  assert.equal(first.entry.scheduledAt, firstScheduledAt, 'merging does not move the send time')
+  contains(first.entry.prompt, '自动提醒', 'merged prompt keeps the reminder marker')
+})
+
+await testAsync('auto-remind quota counts recent deliveries and honours the daily cap', async () => {
+  const now = Date.now()
+  const tasks = Array.from({ length: 4 }, (_, index) => ({
+    id: `quota-${index}`,
+    title: '[handoff-hub] 自动同步 · 1 篇变更',
+    status: 'ended',
+    target: { kind: 'session', sessionId: 'session-quota' },
+    scheduledAt: new Date(now - index * 1000).toISOString(),
+    createdAt: new Date(now - index * 1000).toISOString(),
+    lastDelivery: { deliveredAt: new Date(now - index * 1000).toISOString() }
+  }))
+  const c = createFakeCtx({ tasks })
+  const quota = await autoQuotaFor(c.ctx, 'session-quota', normalizeConfig({ autoNudgeDailyCap: 4 }), now - 10_000)
+  assert.equal(quota.used, 4)
+  assert.equal(quota.cap, 4)
+  assert.equal(quota.ignored, 4)
+  assert.equal(quota.silent, true)
+})
+
+await testAsync('auto-remind defers a task to the end of an active cooldown', async () => {
+  const now = Date.now()
+  const tasks = [{
+    id: 'cooldown-old',
+    title: '[handoff-hub] 自动同步 · 1 篇变更',
+    status: 'ended',
+    target: { kind: 'session', sessionId: 'session-cool-b' },
+    scheduledAt: new Date(now - 60_000).toISOString(),
+    createdAt: new Date(now - 60_000).toISOString(),
+    lastDelivery: { deliveredAt: new Date(now - 60_000).toISOString() }
+  }]
+  const auto = createFakeCtx({ tasks })
+  apply(auto.ctx, { directory: 'work/cooldown-room', promptLanguage: 'zh' })
+  await call(auto.registered, 'handoff_join', { name: 'cool-a', doc: 'cool-a.md', content: '# A\n' }, execFor('session-cool-a'))
+  await call(auto.registered, 'handoff_join', { name: 'cool-b', doc: 'cool-b.md', content: '# B\n' }, execFor('session-cool-b'))
+  const stop = startAutoReminder(
+    auto.ctx,
+    normalizeConfig({
+      directory: 'work/cooldown-room',
+      promptLanguage: 'zh',
+      autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1, mergeSeconds: 1 },
+      autoNudgeCooldownMinutes: 10
+    })
+  )
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await writeFile(join(workspace, 'work', 'cooldown-room', 'cool-a.md'), '# A changed\n')
+  await new Promise((resolve) => setTimeout(resolve, 3200))
+  stop()
+  assert.equal(auto.created.length, 1, 'a deferred task is created')
+  assert.ok(auto.created[0].request.timing.after_seconds > 500, `delivery is deferred to the cooldown end (got ${auto.created[0].request.timing.after_seconds})`)
+})
+
+await testAsync('auto-remind silences a target that ignores repeated reminders', async () => {
+  const now = Date.now()
+  const tasks = Array.from({ length: 2 }, (_, index) => ({
+    id: `silent-${index}`,
+    title: '[handoff-hub] 自动同步 · 1 篇变更',
+    status: 'ended',
+    target: { kind: 'session', sessionId: 'session-silent-b' },
+    scheduledAt: new Date(now + 1000).toISOString(),
+    createdAt: new Date(now + 1000).toISOString(),
+    lastDelivery: { deliveredAt: new Date(now + 1000).toISOString() }
+  }))
+  const auto = createFakeCtx({ tasks })
+  apply(auto.ctx, { directory: 'work/silent-room', promptLanguage: 'zh' })
+  await call(auto.registered, 'handoff_join', { name: 'silent-a', doc: 'silent-a.md', content: '# A\n' }, execFor('session-silent-a'))
+  await call(auto.registered, 'handoff_join', { name: 'silent-b', doc: 'silent-b.md', content: '# B\n' }, execFor('session-silent-b'))
+  const stop = startAutoReminder(
+    auto.ctx,
+    normalizeConfig({
+      directory: 'work/silent-room',
+      promptLanguage: 'zh',
+      autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1, mergeSeconds: 0 },
+      autoNudgeCooldownMinutes: 0,
+      autoNudgeSilenceAfter: 2
+    })
+  )
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await writeFile(join(workspace, 'work', 'silent-room', 'silent-a.md'), '# A changed\n')
+  await new Promise((resolve) => setTimeout(resolve, 3200))
+  stop()
+  assert.equal(auto.created.length, 0, 'a silent target receives no new automatic task')
+})
+
+await testAsync('auto-remind is silent when the daily cap is already used', async () => {
+  const now = Date.now()
+  const tasks = Array.from({ length: 4 }, (_, index) => ({
+    id: `cap-${index}`,
+    title: '[handoff-hub] 自动同步 · 1 篇变更',
+    status: 'ended',
+    target: { kind: 'session', sessionId: 'session-cap-b' },
+    scheduledAt: new Date(now - index * 1000).toISOString(),
+    createdAt: new Date(now - index * 1000).toISOString(),
+    lastDelivery: { deliveredAt: new Date(now - index * 1000).toISOString() }
+  }))
+  const auto = createFakeCtx({ tasks })
+  apply(auto.ctx, { directory: 'work/cap-room', promptLanguage: 'zh' })
+  await call(auto.registered, 'handoff_join', { name: 'cap-a', doc: 'cap-a.md', content: '# A\n' }, execFor('session-cap-a'))
+  await call(auto.registered, 'handoff_join', { name: 'cap-b', doc: 'cap-b.md', content: '# B\n' }, execFor('session-cap-b'))
+  const stop = startAutoReminder(
+    auto.ctx,
+    normalizeConfig({
+      directory: 'work/cap-room',
+      promptLanguage: 'zh',
+      autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1, mergeSeconds: 0 },
+      autoNudgeCooldownMinutes: 0,
+      autoNudgeDailyCap: 4,
+      autoNudgeSilenceAfter: 0
+    })
+  )
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  await writeFile(join(workspace, 'work', 'cap-room', 'cap-a.md'), '# A changed\n')
+  await new Promise((resolve) => setTimeout(resolve, 3200))
+  stop()
+  assert.equal(auto.created.length, 0, 'the capped target receives no new automatic task')
 })
 
 await testAsync('panel state reports registered sessions and auto-remind status', async () => {
@@ -680,12 +888,12 @@ await testAsync('panel state reports registered sessions and auto-remind status'
   assert.equal(state.autoRemind.enabled, true)
 })
 
-function invokePanel(handler, { method, url, body, headers = {} }) {
+function invokePanel(handler, { method, url, body, headers = {}, remoteAddress = '127.0.0.1' }) {
   const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))])
   request.method = method
   request.url = url
   request.headers = headers
-  request.socket = { remoteAddress: '127.0.0.1' }
+  request.socket = { remoteAddress }
   let finish
   const done = new Promise((resolve) => { finish = resolve })
   const response = {
@@ -748,6 +956,363 @@ await testAsync('panel action route nudges registered sessions and rejects missi
     headers: {}
   })
   assert.equal(rejected.status, 403)
+
+  const lan = await invokePanel(handler, {
+    method: 'GET',
+    url: '/handoff-hub/state',
+    headers: {},
+    remoteAddress: '192.168.1.25'
+  })
+  assert.equal(lan.status, 200)
+
+  const publicSource = await invokePanel(handler, {
+    method: 'GET',
+    url: '/handoff-hub/state',
+    headers: {},
+    remoteAddress: '203.0.113.7'
+  })
+  assert.equal(publicSource.status, 403)
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Watcher room resolution, health and reminder diagnostics
+// ---------------------------------------------------------------------------------------------------------------------
+
+await testAsync('watch room prefers a member-bearing workspace over the default directory', async () => {
+  const c = createFakeCtx({ agents: [] })
+  const resolved = await resolveWatchRoom(c.ctx, normalizeConfig({ directory: 'work/handoff' }))
+  assert.equal(resolved, join(workspace, 'work', 'handoff'), 'the room with members wins when no Agent is live')
+})
+
+await testAsync('watch health reports the resolved room and a live scan', async () => {
+  const c = createFakeCtx({ agents: [] })
+  const states = []
+  const stop = startAutoReminder(
+    c.ctx,
+    normalizeConfig({ directory: 'work/handoff', autoRemind: { enabled: true, debounceSeconds: 1, pollSeconds: 1 } }),
+    (state) => states.push(state)
+  )
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  stop()
+  const last = states.at(-1)
+  assert.ok(last, 'the health callback fired')
+  assert.equal(last.room, join(workspace, 'work', 'handoff'))
+  assert.equal(last.roomExists, true)
+  assert.ok(last.docCount >= 1, 'the watcher counted room documents')
+  assert.ok(last.lastScanAt, 'the watcher recorded a scan time')
+})
+
+test('auto-nudge retry config has defaults and clamps invalid values', () => {
+  const defaults = normalizeConfig({})
+  assert.equal(defaults.autoNudgeRetry.enabled, true)
+  assert.equal(defaults.autoNudgeRetry.maxAttempts, 3)
+  assert.equal(defaults.autoNudgeRetry.graceSeconds, 120)
+  assert.equal(defaults.autoNudgeRetry.cooldownSeconds, 600)
+  const tuned = normalizeConfig({ autoNudgeRetry: { enabled: false, maxAttempts: 5, graceSeconds: 30, cooldownSeconds: 60 } })
+  assert.equal(tuned.autoNudgeRetry.enabled, false)
+  assert.equal(tuned.autoNudgeRetry.maxAttempts, 5)
+  assert.equal(tuned.autoNudgeRetry.graceSeconds, 30)
+  assert.equal(tuned.autoNudgeRetry.cooldownSeconds, 60)
+})
+
+test('board prints full session ids, watcher health and unconfirmed reminders', () => {
+  const now = Date.now()
+  const report = boardReport({
+    language: 'zh',
+    room: 'E:/room',
+    self: { sessionId: 'session-self-full', registered: false },
+    peers: [
+      {
+        name: 'peer',
+        sessionId: 'session-peer-full',
+        doc: 'peer.md',
+        absolute: 'E:/room/peer.md',
+        meta: { exists: true, bytes: 10, mtimeMs: now }
+      }
+    ],
+    unregistered: [],
+    warnings: [],
+    autoRemind: { enabled: true, debounceSeconds: 30, mergeSeconds: 60 },
+    autoQuota: { used: 0, cap: 24, cooldownMinutes: 10, silent: false },
+    watcher: { room: 'E:/room', roomExists: true, docCount: 3, lastScanAt: new Date(now).toISOString() },
+    pending: [{ taskId: 'schedule-pending', name: 'peer', sessionId: 'session-peer-full', overdueMs: 120_000 }]
+  })
+  contains(report, 'session-peer-full', 'full peer session id')
+  contains(report, '自动提醒监听', 'watcher health line')
+  contains(report, 'schedule-pending', 'unconfirmed reminder line')
+})
+
+await testAsync('nudge accepts a registered display name as a target', async () => {
+  const c = createFakeCtx()
+  apply(c.ctx, { directory: 'work/name-room', promptLanguage: 'zh' })
+  await call(c.registered, 'handoff_join', { name: 'name-a', doc: 'name-a.md', content: '# A\n' }, execFor('session-name-a'))
+  await call(c.registered, 'handoff_join', { name: 'name-b', doc: 'name-b.md', content: '# B\n' }, execFor('session-name-b'))
+  const { report } = await call(c.registered, 'handoff_nudge', { targets: ['name-b'] }, execFor('session-name-a'))
+  contains(report, 'session-name-b', 'the display name is reported with its id')
+  assert.equal(c.created.length, 1)
+  assert.equal(c.created[0].request.target.sessionId, 'session-name-b')
+})
+
+await testAsync('nudge refuses an archived target before creating a task', async () => {
+  const c = createFakeCtx({ archivedSessionIds: ['session-archived'] })
+  apply(c.ctx, { directory: 'work/arch-room', promptLanguage: 'zh' })
+  const { report } = await call(c.registered, 'handoff_nudge', { targets: ['session-archived'] }, execFor('session-self'))
+  contains(report, '[target_archived]', 'archived target refusal')
+  assert.equal(c.created.length, 0)
+})
+
+await testAsync('nudge status reports a stuck task with its target', async () => {
+  const now = Date.now()
+  const c = createFakeCtx({
+    tasks: [
+      {
+        id: 'schedule-stuck',
+        title: '[handoff-hub] 交接同步 · a → b',
+        status: 'active',
+        scheduledAt: new Date(now - 10 * 60_000).toISOString(),
+        target: { kind: 'session', sessionId: 'session-name-b' }
+      }
+    ]
+  })
+  apply(c.ctx, { directory: 'work/status-room', promptLanguage: 'zh' })
+  const { report } = await call(c.registered, 'handoff_nudge_status', { tasks: ['schedule-stuck'] }, execFor('session-self'))
+  contains(report, 'stuck', 'stuck state')
+  contains(report, 'session-name-b', 'target id')
+})
+
+await testAsync('nudge retry surfaces the underlying delivery error', async () => {
+  const failure = new Error('resume failed for session "session-cold": SessionAlreadyOwnedError')
+  failure.code = 'session/writer-held'
+  const c = createFakeCtx({
+    runError: failure,
+    tasks: [
+      {
+        id: 'schedule-retry',
+        title: '[handoff-hub] 交接同步 · a → b',
+        status: 'active',
+        scheduledAt: new Date(Date.now() - 60_000).toISOString(),
+        target: { kind: 'session', sessionId: 'session-cold' }
+      }
+    ]
+  })
+  apply(c.ctx, { directory: 'work/retry-room', promptLanguage: 'zh' })
+  const { report } = await call(c.registered, 'handoff_nudge_retry', { task: 'schedule-retry' }, execFor('session-self'))
+  contains(report, 'session/writer-held', 'the Schedule error code is surfaced')
+  contains(report, 'SessionAlreadyOwnedError', 'the Schedule error message is surfaced')
+})
+
+await testAsync('nudge retry resolve mode reports the target resume error', async () => {
+  const c = createFakeCtx({
+    sessionController: {
+      async resolveAgent() {
+        return { error: { code: 'session/writer-held', message: 'writer held by another process' } }
+      }
+    },
+    tasks: [
+      {
+        id: 'schedule-resolve',
+        title: '[handoff-hub] 交接同步 · a → b',
+        status: 'active',
+        scheduledAt: new Date().toISOString(),
+        target: { kind: 'session', sessionId: 'session-cold' }
+      }
+    ]
+  })
+  apply(c.ctx, { directory: 'work/resolve-room', promptLanguage: 'zh' })
+  const { report } = await call(c.registered, 'handoff_nudge_retry', { task: 'schedule-resolve', mode: 'resolve' }, execFor('session-self'))
+  contains(report, 'session/writer-held', 'the resolution error is surfaced')
+  assert.equal(c.created.length, 0, 'resolve mode sends nothing')
+})
+
+await testAsync('nudge retry delivers a stuck task and reports the receipt', async () => {
+  const c = createFakeCtx({
+    tasks: [
+      {
+        id: 'schedule-deliver',
+        title: '[handoff-hub] 交接同步 · a → b',
+        status: 'active',
+        scheduledAt: new Date(Date.now() - 60_000).toISOString(),
+        target: { kind: 'session', sessionId: 'session-name-b' }
+      }
+    ]
+  })
+  apply(c.ctx, { directory: 'work/deliver-room', promptLanguage: 'zh' })
+  const { report } = await call(c.registered, 'handoff_nudge_retry', { task: 'schedule-deliver' }, execFor('session-self'))
+  contains(report, '投递成功', 'delivery receipt is reported')
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Pending-reminder merging (one queued message per target)
+// ---------------------------------------------------------------------------------------------------------------------
+
+await testAsync('two quick nudges to the same target merge into one pending task', async () => {
+  const c = createFakeCtx()
+  apply(c.ctx, { directory: 'work/merge-nudge-room', promptLanguage: 'zh' })
+  await call(c.registered, 'handoff_join', { name: 'merge-a', doc: 'merge-a.md', content: '# A\n' }, execFor('session-merge-a'))
+  await call(c.registered, 'handoff_join', { name: 'merge-b', doc: 'merge-b.md', content: '# B\n' }, execFor('session-merge-b'))
+  const first = await call(c.registered, 'handoff_nudge', { targets: ['merge-b'], delaySeconds: 30 }, execFor('session-merge-a'))
+  contains(first.report, '已排期', 'the first nudge queues')
+  const second = await call(c.registered, 'handoff_nudge', { targets: ['merge-b'], delaySeconds: 1 }, execFor('session-merge-a'))
+  contains(second.report, '已合并', 'the second nudge merges')
+  assert.equal(c.created.length, 1, 'only one task was created')
+  assert.equal(c.edits.length, 1, 'the pending task was updated')
+  assert.equal(c.edits[0].patch.timing?.kind, 'at', 'an earlier nudge moves the keeper earlier')
+  contains(c.edits[0].patch.prompt, '交接同步提醒', 'the merged prompt keeps the reminder body')
+})
+
+await testAsync('a nudge merges into a pending automatic reminder', async () => {
+  const c = createFakeCtx({
+    tasks: [
+      {
+        id: 'schedule-auto-pending',
+        title: '[handoff-hub] 自动同步 · 1 篇变更',
+        status: 'active',
+        prompt: '自动提醒正文',
+        scheduledAt: new Date(Date.now() + 30_000).toISOString(),
+        target: { kind: 'session', sessionId: 'session-auto-b' }
+      }
+    ]
+  })
+  apply(c.ctx, { directory: 'work/merge-auto-room', promptLanguage: 'zh' })
+  await call(c.registered, 'handoff_join', { name: 'auto-a', doc: 'auto-a.md', content: '# A\n' }, execFor('session-auto-a'))
+  await call(c.registered, 'handoff_join', { name: 'auto-b', doc: 'auto-b.md', content: '# B\n' }, execFor('session-auto-b'))
+  const { report } = await call(c.registered, 'handoff_nudge', { targets: ['auto-b'], delaySeconds: 1 }, execFor('session-auto-a'))
+  contains(report, '已合并', 'the manual nudge merges into the automatic task')
+  assert.equal(c.created.length, 0, 'no second task is created')
+  assert.equal(c.edits.length, 1, 'the automatic task is updated')
+  contains(c.edits[0].patch.prompt, '自动提醒正文', 'the old body survives the merge')
+  contains(c.edits[0].patch.prompt, '交接同步提醒', 'the new body is appended')
+})
+
+await testAsync('an automatic reminder merges into a pending manual nudge', async () => {
+  const c = createFakeCtx({
+    tasks: [
+      {
+        id: 'schedule-manual-pending',
+        title: '[handoff-hub] 交接同步 · a → b',
+        status: 'active',
+        prompt: '手工提醒正文',
+        scheduledAt: new Date(Date.now() + 30_000).toISOString(),
+        target: { kind: 'session', sessionId: 'session-pending-b' }
+      }
+    ]
+  })
+  const pending = await pendingHandoffTasks(c.ctx)
+  const outcome = await scheduleMergedReminder(c.ctx, {
+    targetSessionId: 'session-pending-b',
+    title: '[handoff-hub] 自动同步 · 1 篇变更',
+    prompt: '自动提醒正文2',
+    delaySeconds: 5,
+    pendingTasks: pending
+  })
+  assert.equal(outcome.merged, true)
+  assert.equal(c.created.length, 0, 'no second task is created')
+  assert.equal(c.edits.length, 1, 'the manual task is updated')
+  contains(c.edits[0].patch.prompt, '手工提醒正文', 'the manual body survives the merge')
+  contains(c.edits[0].patch.prompt, '自动提醒正文2', 'the automatic body is appended')
+})
+
+await testAsync('an overdue stuck reminder is not used as a merge target', async () => {
+  const c = createFakeCtx({
+    tasks: [
+      {
+        id: 'schedule-stuck-overdue',
+        title: '[handoff-hub] 交接同步 · a → b',
+        status: 'active',
+        prompt: '卡住的任务',
+        scheduledAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        target: { kind: 'session', sessionId: 'session-stuck-b' }
+      }
+    ]
+  })
+  const pending = await pendingHandoffTasks(c.ctx)
+  assert.equal(pending.length, 0, 'an overdue task is not mergeable')
+  const outcome = await scheduleMergedReminder(c.ctx, {
+    targetSessionId: 'session-stuck-b',
+    title: '[handoff-hub] 自动同步 · 1 篇变更',
+    prompt: '新提醒',
+    delaySeconds: 1,
+    pendingTasks: pending
+  })
+  assert.equal(outcome.merged, false)
+  assert.equal(c.created.length, 1, 'a fresh task is created instead')
+  assert.equal(c.edits.length, 0)
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// handoff_dispatch
+// ---------------------------------------------------------------------------------------------------------------------
+await testAsync('dispatch queues a task with its own marker and schema-checked input', async () => {
+  const d = createFakeCtx({})
+  apply(d.ctx, { directory: 'work/handoff', promptLanguage: 'zh', nudgeDelaySeconds: 1, maxRecipients: 8, maxDocBytes: 2048 })
+  await call(d.registered, 'handoff_join', { name: 'peer', content: '# peer' }, execFor('session-peer'))
+  const result = await call(d.registered, 'handoff_dispatch', { target: 'peer', task: '统计 total 并回报数字', acceptance: '给出数字' }, execFor('session-self'))
+  const parsed = JSON.parse(result.report ?? result)
+  assert.equal(parsed.dispatched, true)
+  assert.match(fake2Title(d), /^\[handoff-dispatch\]/)
+  assert.equal(d.created.length, 1)
+})
+
+function fake2Title(d) {
+  return d.created[0]?.request?.title ?? ''
+}
+
+await testAsync('dispatch rejects an oversized task', async () => {
+  const d = createFakeCtx({})
+  apply(d.ctx, { directory: 'work/handoff', promptLanguage: 'zh', nudgeDelaySeconds: 1, maxRecipients: 8, maxDocBytes: 2048 })
+  await call(d.registered, 'handoff_join', { name: 'peer', content: '# peer' }, execFor('session-peer'))
+  const rejected = await call(d.registered, 'handoff_dispatch', { target: 'peer', task: 'x'.repeat(2001) }, execFor('session-self'))
+  assert.match(JSON.stringify(rejected), /task_too_long/)
+  assert.equal(d.created.length, 0)
+})
+
+await testAsync('dispatch rejects control characters', async () => {
+  const d = createFakeCtx({})
+  apply(d.ctx, { directory: 'work/handoff', promptLanguage: 'zh', nudgeDelaySeconds: 1, maxRecipients: 8, maxDocBytes: 2048 })
+  await call(d.registered, 'handoff_join', { name: 'peer', content: '# peer' }, execFor('session-peer'))
+  const rejected = await call(d.registered, 'handoff_dispatch', { target: 'peer', task: '统计\u0001total' }, execFor('session-self'))
+  assert.match(JSON.stringify(rejected), /invalid_text/)
+})
+
+await testAsync('dispatch rejects self-target', async () => {
+  const d = createFakeCtx({})
+  apply(d.ctx, { directory: 'work/handoff', promptLanguage: 'zh', nudgeDelaySeconds: 1, maxRecipients: 8, maxDocBytes: 2048 })
+  await call(d.registered, 'handoff_join', { name: 'self', content: '# self' }, execFor('session-self'))
+  const rejected = await call(d.registered, 'handoff_dispatch', { target: 'self', task: '给自己派活' }, execFor('session-self'))
+  assert.match(JSON.stringify(rejected), /self_dispatch/)
+})
+
+await testAsync('purge deletes only tasks whose target session is gone', async () => {
+  const tasks = [
+    { id: 'schedule-dead', title: '[handoff-hub] Handoff sync · lead → x', status: 'active', target: { kind: 'session', sessionId: 'session-dead' } },
+    { id: 'schedule-live', title: '[handoff-hub] Handoff sync · lead → y', status: 'active', target: { kind: 'session', sessionId: 'session-live' } }
+  ]
+  const d = createFakeCtx({ tasks, stat: (id) => (id === 'session-dead' ? undefined : { header: { cwd: workspace } }) })
+  apply(d.ctx, { directory: 'work/handoff', promptLanguage: 'zh', nudgeDelaySeconds: 1, maxRecipients: 8, maxDocBytes: 2048 })
+  const result = await call(d.registered, 'handoff_purge_stale', {}, execFor('session-self'))
+  const parsed = JSON.parse(result.report ?? result)
+  assert.equal(parsed.deletedCount, 1)
+  assert.deepEqual(parsed.deleted, ['schedule-dead'])
+  assert.equal(d.deleted.length, 1)
+})
+
+await testAsync('purge treats resume failures as stale and honours explicit sessionIds', async () => {
+  const tasks = [
+    { id: 'schedule-broken', title: '[handoff-hub] Handoff sync · x', status: 'active', target: { kind: 'session', sessionId: 'session-broken' } },
+    { id: 'schedule-explicit', title: '[handoff-dispatch] Task · y', status: 'active', target: { kind: 'session', sessionId: 'session-dead' } },
+    { id: 'schedule-live2', title: '[handoff-hub] Handoff sync · z', status: 'active', target: { kind: 'session', sessionId: 'session-live' } }
+  ]
+  const d = createFakeCtx({
+    tasks,
+    stat: (id) => (id === 'session-dead' ? undefined : { header: { cwd: workspace } }),
+    sessionController: { async resolveAgent(id) { return id === 'session-broken' ? { error: { code: 'resume_failed' } } : { agent: { id } } } }
+  })
+  apply(d.ctx, { directory: 'work/handoff', promptLanguage: 'zh', nudgeDelaySeconds: 1, maxRecipients: 8, maxDocBytes: 2048 })
+  const result = await call(d.registered, 'handoff_purge_stale', { sessionIds: ['session-dead'] }, execFor('session-self'))
+  const parsed = JSON.parse(result.report ?? result)
+  assert.equal(parsed.deletedCount, 2)
+  assert.deepEqual(parsed.deleted.sort(), ['schedule-broken', 'schedule-explicit'])
+  assert.equal(d.deleted.length, 2)
 })
 
 // ---------------------------------------------------------------------------------------------------------------------
