@@ -16,8 +16,8 @@
         "zh": "交接中枢"
       },
       "description": {
-        "en": "Simultaneous handoff-document sync for independent DSH sessions: targeted directory-change reminders, session-group panel, durable Schedule nudges.",
-        "zh": "同一工作区多个独立 DSH 会话的交接文档互读提醒：定向目录变更提醒、对话组管理面板、持久化 Schedule 投递。"
+        "en": "Simultaneous handoff-document sync for independent DSH sessions: targeted reminders, Router-to-Worker task dispatch, stale-queue purge, session-group panel.",
+        "zh": "同一工作区多个独立 DSH 会话的交接文档互读提醒：定向目录变更提醒、Router→Worker 派单、失效任务清理、对话组管理面板。"
       },
       "author": "LiFePO2",
       "homepage": "https://github.com/LiFePO2/dsh-handoff-hub",
@@ -25,6 +25,15 @@
         "url": "https://github.com/LiFePO2/dsh-handoff-hub"
       },
       "versions": [
+        {
+          "version": "1.2.4",
+          "publishTimestamp": 1795083255,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/LiFePO2/dsh-handoff-hub",
+            "commit": "da96f0f599277fb55ec5dfc436cad5b917dcde62"
+          }
+        },
         {
           "version": "1.1.0",
           "publishTimestamp": 1794329566,
